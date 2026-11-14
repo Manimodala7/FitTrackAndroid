@@ -18,12 +18,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Generate Gradle Wrapper & Build Debug APK
+      - name: Accept Android SDK Licenses & Build APK
         run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           gradle wrapper --gradle-version 8.7
+          chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload Compiled APK
