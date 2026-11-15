@@ -46,7 +46,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -175,7 +174,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var stepSensor: Sensor? = null
     private var sensorStepsToday by mutableIntStateOf(0)
     private var manualStepsToday by mutableIntStateOf(0)
-    private var lastRawHardwareSteps = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -211,18 +209,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 FitTrackMainRoot(
                     prefs = prefs,
                     steps = totalLiveSteps,
-                    onManualAddSteps = { added ->
-                        val currentKey = LocalDate.now().toString()
-                        manualStepsToday = (manualStepsToday + added).coerceAtLeast(0)
-                        val combined = (sensorStepsToday + manualStepsToday).coerceAtLeast(0)
-                        prefs.edit()
-                            .putInt("manual_steps_$currentKey", manualStepsToday)
-                            .putInt("steps_$currentKey", combined)
-                            .apply()
-                        updateAllHomeWidgets(this@MainActivity)
-                    },
                     onCalibrateExactSteps = { exactTargetSteps ->
-                        // Matches Google Fit 100%: sets manual offset so total equals Google Fit and hardware sensor continues from there
+                        // Matches Google Fit 100%: sets offset so total equals Google Fit and hardware sensor continues from there
                         val currentKey = LocalDate.now().toString()
                         manualStepsToday = exactTargetSteps - sensorStepsToday
                         prefs.edit()
@@ -251,11 +239,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    // IMPORTANT FIX: Do NOT unregister step sensor in onPause() so steps keep counting while screen is off!
+    // Do NOT unregister step sensor in onPause() so steps keep counting while screen is off
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
             val totalStepsSinceBoot = event.values[0].toInt()
-            lastRawHardwareSteps = totalStepsSinceBoot
 
             val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
             val todayKey = LocalDate.now().toString()
@@ -271,7 +258,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             manualStepsToday = prefs.getInt("manual_steps_$todayKey", 0)
             val totalToday = (sensorStepsToday + manualStepsToday).coerceAtLeast(0)
 
-            // Record timestamps for automatic sleep estimation (last movement at night / first step in morning)
+            // Record timestamps for automatic sleep estimation (first step in morning / last movement at night)
             val nowHour = LocalTime.now().hour
             val editor = prefs.edit()
                 .putInt("sensor_steps_$todayKey", sensorStepsToday)
@@ -337,18 +324,8 @@ class ReminderReceiver : BroadcastReceiver() {
         val prefs = context.getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
         val todayStr = LocalDate.now().toString()
 
-        // Handle Home Screen Widget Quick Buttons
+        // Handle Home Screen Widget Quick Water Button
         when (intent.action) {
-            "com.fittrack.app.ACTION_WIDGET_ADD_STEPS" -> {
-                val manual = prefs.getInt("manual_steps_$todayStr", 0) + 500
-                val sensor = prefs.getInt("sensor_steps_$todayStr", 0)
-                prefs.edit()
-                    .putInt("manual_steps_$todayStr", manual)
-                    .putInt("steps_$todayStr", sensor + manual)
-                    .apply()
-                updateAllHomeWidgets(context)
-                return
-            }
             "com.fittrack.app.ACTION_WIDGET_ADD_WATER" -> {
                 val water = prefs.getInt("water_ml_$todayStr", 0) + 250
                 prefs.edit()
@@ -425,7 +402,7 @@ fun calculateHealthScoreFromPrefs(prefs: SharedPreferences, todayStr: String): I
     val stepGoal = prefs.getInt("step_target", 8000).coerceAtLeast(1)
     val waterMl = prefs.getInt("water_ml_$todayStr", 0)
     val sleepHrs = prefs.getFloat("sleep_hrs_$todayStr", 7.5f)
-    val workoutBurn = prefs.getInt("workout_burn_$todayStr", 185)
+    val workoutBurn = prefs.getInt("workout_burn_$todayStr", 0)
 
     val stepPts = ((steps.toFloat() / stepGoal) * 25f).coerceIn(0f, 25f)
     val waterPts = ((waterMl.toFloat() / 3000f) * 25f).coerceIn(0f, 25f)
@@ -442,7 +419,7 @@ fun updateAllHomeWidgets(context: Context) {
     val steps = prefs.getInt("steps_$todayStr", 0)
     val stepGoal = prefs.getInt("step_target", 8000)
     val stepBurn = (steps * 0.04f).roundToInt()
-    val workoutBurn = prefs.getInt("workout_burn_$todayStr", 185)
+    val workoutBurn = prefs.getInt("workout_burn_$todayStr", 0)
     val totalBurn = stepBurn + workoutBurn
     val waterMl = prefs.getInt("water_ml_$todayStr", 0)
     val sleepHrs = prefs.getFloat("sleep_hrs_$todayStr", 7.5f)
@@ -478,10 +455,6 @@ fun updateAllHomeWidgets(context: Context) {
 
     // 3. Update 4x3 Interactive Widgets
     val ids4x3 = manager.getAppWidgetIds(ComponentName(context, WidgetDashboard4x3::class.java))
-    val addStepsPending = PendingIntent.getBroadcast(
-        context, 501, Intent(context, ReminderReceiver::class.java).apply { action = "com.fittrack.app.ACTION_WIDGET_ADD_STEPS" },
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
     val addWaterPending = PendingIntent.getBroadcast(
         context, 502, Intent(context, ReminderReceiver::class.java).apply { action = "com.fittrack.app.ACTION_WIDGET_ADD_WATER" },
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -493,7 +466,6 @@ fun updateAllHomeWidgets(context: Context) {
         views.setTextViewText(R.id.w4x3_summary, "👟 $steps steps  |  🔥 $totalBurn kcal burned")
         views.setTextViewText(R.id.w4x3_sub, "💧 Water: $waterMl / 3000 ml   •   😴 Sleep: $sleepHrs hrs")
         views.setOnClickPendingIntent(R.id.widget_root_4x3, openAppIntent)
-        views.setOnClickPendingIntent(R.id.btn_widget_steps, addStepsPending)
         views.setOnClickPendingIntent(R.id.btn_widget_water, addWaterPending)
         manager.updateAppWidget(id, views)
     }
@@ -524,7 +496,6 @@ class WidgetDashboard4x3 : AppWidgetProvider() {
 fun FitTrackMainRoot(
     prefs: SharedPreferences,
     steps: Int,
-    onManualAddSteps: (Int) -> Unit,
     onCalibrateExactSteps: (Int) -> Unit,
     onRefreshWidgets: () -> Unit
 ) {
@@ -556,8 +527,16 @@ fun FitTrackMainRoot(
     var stepTarget by remember { mutableIntStateOf(prefs.getInt("step_target", 8000)) }
     var userBodyWeightKg by remember { mutableIntStateOf(prefs.getInt("body_weight_kg", 70)) }
     var daily30MinDefaultCals by remember { mutableIntStateOf(prefs.getInt("daily_30m_cals", 185)) }
-    var daily30MinCompletedToday by remember { mutableStateOf(prefs.getBoolean("daily30_done_$todayStr", true)) }
     var notificationsEnabled by remember { mutableStateOf(prefs.getBoolean("notif_enabled", true)) }
+
+    // Separate 30-Min Routine toggle for each day of the week (Mon - Sun)
+    val daily30MinByDay = remember {
+        mutableStateMapOf<String, Boolean>().apply {
+            listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach { day ->
+                put(day, prefs.getBoolean("daily30_${currentMondayStr}_$day", false))
+            }
+        }
+    }
 
     // Water & Sleep State
     var waterIntakeMl by remember { mutableIntStateOf(prefs.getInt("water_ml_$todayStr", 0)) }
@@ -644,7 +623,7 @@ fun FitTrackMainRoot(
             .putString("log_wlbl_$id", state.selectedWeightLabel)
             .putFloat("log_mult_$id", state.loadMultiplierKg)
             .putString("mem_weight_$id", state.previousWeightMemory)
-            .putBoolean("workout_updated_$todayStr", true) // Marks today's workout as updated so 10:30 AM / 4:00 PM alert knows!
+            .putBoolean("workout_updated_$todayStr", true)
             .apply()
     }
 
@@ -686,6 +665,27 @@ fun FitTrackMainRoot(
                 saveSingleLogToPrefs(ex.id, st.copy(completedSets = 0, previousWeightMemory = st.selectedWeightLabel))
             }
         }
+
+        // Archive & reset each day's 30-Min Routine for the new week
+        listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach { day ->
+            if (daily30MinByDay[day] == true) {
+                workoutHistoryList.add(
+                    0,
+                    WorkoutHistoryEntry(
+                        System.currentTimeMillis() + day.hashCode(),
+                        todayStr,
+                        day,
+                        "Daily 30-Min Routine & Warm-Up",
+                        1,
+                        "5 kg Squats + Pushups",
+                        daily30MinDefaultCals
+                    )
+                )
+                daily30MinByDay[day] = false
+                prefs.edit().putBoolean("daily30_${currentMondayStr}_$day", false).apply()
+            }
+        }
+
         val arr = JSONArray()
         workoutHistoryList.take(200).forEach { item ->
             arr.put(JSONObject().apply {
@@ -697,7 +697,6 @@ fun FitTrackMainRoot(
         prefs.edit().putString("workout_history_json", arr.toString()).apply()
     }
 
-    // Notice: Removed the automatic notification trigger on app launch!
     LaunchedEffect(Unit) {
         loadLogsFromPrefs()
         loadHistoryFromPrefs()
@@ -712,7 +711,8 @@ fun FitTrackMainRoot(
 
     // --- CALORIES & HEALTH SCORE (0 - 100) ---
     val stepCalories = (steps * (userBodyWeightKg / 70f) * 0.04f).roundToInt()
-    val daily30MinCalories = if (daily30MinCompletedToday) daily30MinDefaultCals else 0
+    val todayShortDay = today.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+    val daily30MinCalories = if (daily30MinByDay[todayShortDay] == true) daily30MinDefaultCals else 0
     val splitWorkoutCalories = exercisesList.sumOf { ex ->
         val st = exerciseLogs[ex.id] ?: ExerciseLogState()
         (st.completedSets * (ex.baseCalPerSet + (st.loadMultiplierKg * 0.45f))).roundToInt()
@@ -721,7 +721,6 @@ fun FitTrackMainRoot(
     val totalBurnedCalories = stepCalories + totalWorkoutBurn
     val totalEatenCalories = foodLogs.sumOf { it.calories }
 
-    // Save workout burn to prefs for Home Screen Widgets
     LaunchedEffect(totalWorkoutBurn, steps, waterIntakeMl, sleepHoursToday) {
         prefs.edit().putInt("workout_burn_$todayStr", totalWorkoutBurn).apply()
         val stepCals = (steps * 0.04f).roundToInt()
@@ -797,7 +796,6 @@ fun FitTrackMainRoot(
                     waterScore = waterScore,
                     sleepScore = sleepScore,
                     foodLogs = foodLogs,
-                    onManualAddSteps = onManualAddSteps,
                     onCalibrateExactSteps = onCalibrateExactSteps,
                     onChangeStepTarget = { newGoal ->
                         stepTarget = newGoal
@@ -826,12 +824,12 @@ fun FitTrackMainRoot(
                 1 -> Tab2FriendlyWorkouts(
                     exercisesList = exercisesList,
                     exerciseLogs = exerciseLogs,
-                    daily30MinCompletedToday = daily30MinCompletedToday,
+                    daily30MinByDay = daily30MinByDay,
                     daily30MinDefaultCals = daily30MinDefaultCals,
-                    onToggleDaily30Min = { checked ->
-                        daily30MinCompletedToday = checked
+                    onToggleDaily30MinForDay = { day, checked ->
+                        daily30MinByDay[day] = checked
                         prefs.edit()
-                            .putBoolean("daily30_done_$todayStr", checked)
+                            .putBoolean("daily30_${currentMondayStr}_$day", checked)
                             .putBoolean("workout_updated_$todayStr", true)
                             .apply()
                     },
@@ -950,7 +948,7 @@ fun FitTrackMainRoot(
 }
 
 // ============================================================================
-// TAB 1: OPTION B FRIENDLY DASHBOARD (HEALTH SCORE, DUAL RINGS, WATER, SLEEP, TREATS)
+// TAB 1: OPTION B FRIENDLY DASHBOARD (NO +500 BUTTON, GOOGLE FIT SYNC, WATER, SLEEP)
 // ============================================================================
 @Composable
 fun Tab1FriendlyDashboard(
@@ -972,7 +970,6 @@ fun Tab1FriendlyDashboard(
     waterScore: Int,
     sleepScore: Int,
     foodLogs: MutableList<FoodItem>,
-    onManualAddSteps: (Int) -> Unit,
     onCalibrateExactSteps: (Int) -> Unit,
     onChangeStepTarget: (Int) -> Unit,
     onAddWaterMl: (Int) -> Unit,
@@ -1039,7 +1036,6 @@ fun Tab1FriendlyDashboard(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // 4 Score Pillars
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -1074,7 +1070,6 @@ fun Tab1FriendlyDashboard(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Side-by-Side Option B Pastel Rings
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1127,7 +1122,6 @@ fun Tab1FriendlyDashboard(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Breakdown tiles matching Option B
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -1139,30 +1133,18 @@ fun Tab1FriendlyDashboard(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    Row(
+                    FilledTonalButton(
+                        onClick = { showCalibrateDialog = true },
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
                     ) {
-                        FilledTonalButton(
-                            onClick = { onManualAddSteps(500) },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
-                        ) {
-                            Text("+500 Steps", color = PastelLavender, fontSize = 12.sp)
-                        }
-                        FilledTonalButton(
-                            onClick = { showCalibrateDialog = true },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
-                        ) {
-                            Text("Match Google Fit", color = PastelMint, fontSize = 12.sp)
-                        }
+                        Text("Sync with Google Fit / Edit Step Goal", color = PastelMint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        // --- 3. HYDRATION / WATER TRACKER CARD (7:30 AM + 11 AM HOURLY + 4H CHECK-IN) ---
+        // --- 3. HYDRATION / WATER TRACKER CARD ---
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1473,15 +1455,15 @@ fun ScorePillarChip(title: String, score: String, color: Color) {
 }
 
 // ============================================================================
-// TAB 2: WORKOUT SPLIT + BUILT-IN REST TIMER + VISUALS
+// TAB 2: WORKOUT SPLIT + PER-DAY 30-MIN ROUTINE + BUILT-IN REST TIMER
 // ============================================================================
 @Composable
 fun Tab2FriendlyWorkouts(
     exercisesList: List<WorkoutExercise>,
     exerciseLogs: Map<String, ExerciseLogState>,
-    daily30MinCompletedToday: Boolean,
+    daily30MinByDay: Map<String, Boolean>,
     daily30MinDefaultCals: Int,
-    onToggleDaily30Min: (Boolean) -> Unit,
+    onToggleDaily30MinForDay: (String, Boolean) -> Unit,
     onUpdateExerciseLog: (String, ExerciseLogState) -> Unit,
     onAddExercise: (WorkoutExercise) -> Unit,
     onEditExercise: (WorkoutExercise) -> Unit,
@@ -1489,11 +1471,12 @@ fun Tab2FriendlyWorkouts(
     onFinishAndArchiveWeek: () -> Unit
 ) {
     val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-    var selectedDay by remember { mutableStateOf("Mon") }
+    val todayDefaultDay = LocalDate.now().dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+    var selectedDay by remember { mutableStateOf(if (todayDefaultDay in days) todayDefaultDay else "Mon") }
     var showAddWorkoutModal by remember { mutableStateOf(false) }
     var editingExercise by remember { mutableStateOf<WorkoutExercise?>(null) }
 
-    // BONUS RECOMMENDATION: Built-in Gym Rest Timer (30s / 60s / 90s)
+    // Built-in Gym Rest Timer (30s / 60s / 90s)
     var restSecondsLeft by remember { mutableIntStateOf(0) }
     LaunchedEffect(restSecondsLeft) {
         if (restSecondsLeft > 0) {
@@ -1512,7 +1495,7 @@ fun Tab2FriendlyWorkouts(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(vertical = 18.dp)
     ) {
-        // ACTIVE REST TIMER BAR (Bonus Feature)
+        // ACTIVE REST TIMER BAR
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1543,12 +1526,15 @@ fun Tab2FriendlyWorkouts(
             }
         }
 
-        // DEFAULT DAILY 30-MIN WORKOUT ROUTINE
+        // DAILY 30-MIN WORKOUT ROUTINE (SEPARATE FOR EACH DAY: MON - SUN)
         item {
+            val isDoneForSelectedDay = daily30MinByDay[selectedDay] == true
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
                 shape = RoundedCornerShape(22.dp),
-                modifier = Modifier.fillMaxWidth().border(1.dp, PastelMint, RoundedCornerShape(22.dp))
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, if (isDoneForSelectedDay) PastelMint else CardElevated, RoundedCornerShape(22.dp))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -1557,10 +1543,25 @@ fun Tab2FriendlyWorkouts(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("🔥 Daily 30-Min Routine & Warm-Up", color = PastelMint, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("Counted by default (+$daily30MinDefaultCals kcal)", color = TextMuted, fontSize = 11.sp)
+                            Text(
+                                "🔥 $selectedDay: 30-Min Routine & Warm-Up",
+                                color = if (isDoneForSelectedDay) PastelMint else TextSoftWhite,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                if (isDoneForSelectedDay) "Completed for $selectedDay (+$daily30MinDefaultCals kcal)"
+                                else "Not done yet for $selectedDay (Toggle ON when finished)",
+                                color = if (isDoneForSelectedDay) PastelMint else TextMuted,
+                                fontSize = 11.sp
+                            )
                         }
-                        Switch(checked = daily30MinCompletedToday, onCheckedChange = onToggleDaily30Min)
+                        Switch(
+                            checked = isDoneForSelectedDay,
+                            onCheckedChange = { checked ->
+                                onToggleDaily30MinForDay(selectedDay, checked)
+                            }
+                        )
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("• Normal Warm-up  •  1 set normal + 2 sets 5kg squats", color = TextSoftWhite, fontSize = 12.sp)
@@ -1697,7 +1698,7 @@ fun Tab2FriendlyWorkouts(
                                                 exercise.id,
                                                 logState.copy(completedSets = newCount, previousWeightMemory = logState.selectedWeightLabel)
                                             )
-                                            if (newCount > logState.completedSets) restSecondsLeft = 60 // Auto-start 60s rest timer
+                                            if (newCount > logState.completedSets) restSecondsLeft = 60
                                         }
                                 ) {
                                     if (isDone) {
