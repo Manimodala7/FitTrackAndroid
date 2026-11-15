@@ -50,31 +50,18 @@
         android:textColor="#C4B5FD"
         android:textSize="12sp" />
 
-    <LinearLayout
+   <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:orientation="horizontal">
 
         <Button
-            android:id="@+id/btn_widget_steps"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:backgroundTint="#34D399"
-            android:text="+500 Steps"
-            android:textColor="#1E2235"
-            android:textSize="12sp"
-            android:textStyle="bold" />
-
-        <Button
             android:id="@+id/btn_widget_water"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="40dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
             android:backgroundTint="#60A5FA"
-            android:text="+250ml Water"
+            android:text="💧 +250ml Water"
             android:textColor="#1E2235"
             android:textSize="12sp"
             android:textStyle="bold" />
