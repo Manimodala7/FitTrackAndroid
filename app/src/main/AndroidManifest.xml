@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
 
     <application
@@ -12,6 +15,7 @@
         android:label="FitTrack Pro"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -20,5 +24,56 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Scheduled Notifications & Widget Action Receiver -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.fittrack.app.ACTION_WIDGET_ADD_STEPS" />
+                <action android:name="com.fittrack.app.ACTION_WIDGET_ADD_WATER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Format 1: 2x2 Compact Widget -->
+        <receiver
+            android:name=".WidgetCompact2x2"
+            android:exported="true"
+            android:label="FitTrack 2x2 Compact Ring">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_2x2" />
+        </receiver>
+
+        <!-- Format 2: 4x2 Horizontal Summary Widget -->
+        <receiver
+            android:name=".WidgetSummary4x2"
+            android:exported="true"
+            android:label="FitTrack 4x2 Burn Summary">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_4x2" />
+        </receiver>
+
+        <!-- Format 3: 4x3 Interactive Dashboard Widget -->
+        <receiver
+            android:name=".WidgetDashboard4x3"
+            android:exported="true"
+            android:label="FitTrack 4x3 Dashboard">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_4x3" />
+        </receiver>
+
     </application>
 </manifest>
