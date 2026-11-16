@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
 
@@ -25,22 +28,29 @@
             </intent-filter>
         </activity>
 
-        <!-- Scheduled Notifications & Widget Action Receiver -->
+        <!-- Real-Time 24/7 Pedometer Foreground Service -->
+        <service
+            android:name=".StepForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="health" />
+
+        <!-- Exact Alarm Notification & Widget Action Receiver -->
         <receiver
             android:name=".ReminderReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="com.fittrack.app.ACTION_WIDGET_ADD_STEPS" />
+                <action android:name="com.fittrack.app.ACTION_EXACT_ALARM" />
                 <action android:name="com.fittrack.app.ACTION_WIDGET_ADD_WATER" />
             </intent-filter>
         </receiver>
 
-        <!-- Format 1: 2x2 Compact Widget -->
+        <!-- Format 1: 2x2 Circular Step Gauge Widget -->
         <receiver
             android:name=".WidgetCompact2x2"
             android:exported="true"
-            android:label="FitTrack 2x2 Compact Ring">
+            android:label="FitTrack 2x2 Circular Steps">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -49,11 +59,11 @@
                 android:resource="@xml/widget_info_2x2" />
         </receiver>
 
-        <!-- Format 2: 4x2 Horizontal Summary Widget -->
+        <!-- Format 2: 4x2 Graphical KPI Cards Widget -->
         <receiver
             android:name=".WidgetSummary4x2"
             android:exported="true"
-            android:label="FitTrack 4x2 Burn Summary">
+            android:label="FitTrack 4x2 KPI Cards">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -62,11 +72,11 @@
                 android:resource="@xml/widget_info_4x2" />
         </receiver>
 
-        <!-- Format 3: 4x3 Interactive Dashboard Widget -->
+        <!-- Format 3: 4x3 Visual Dashboard Widget -->
         <receiver
             android:name=".WidgetDashboard4x3"
             android:exported="true"
-            android:label="FitTrack 4x3 Dashboard">
+            android:label="FitTrack 4x3 Visual Dashboard">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
