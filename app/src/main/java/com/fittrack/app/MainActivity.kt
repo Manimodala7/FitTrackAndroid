@@ -5,6 +5,7 @@ import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Service
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.BroadcastReceiver
@@ -13,12 +14,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Color as AndroidColor
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.widget.RemoteViews
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -64,6 +74,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.temporal.TemporalAdjusters
 import java.util.Calendar
+import java.util.Locale
 import kotlin.math.roundToInt
 
 // --- OPTION B: FRIENDLY COZY SLATE & PASTEL PALETTE ---
@@ -91,12 +102,14 @@ data class WorkoutExercise(
     val visualType: String = "barbell"
 )
 
+// Dynamic Per-Set State: Every set has its own weight and completion flag!
 data class ExerciseLogState(
-    val completedSets: Int = 0,
-    val selectedWeightLabel: String = "5 kg/side",
-    val loadMultiplierKg: Float = 10f,
-    val previousWeightMemory: String = "5 kg/side"
-)
+    val setCompletedList: List<Boolean> = listOf(false, false, false),
+    val setWeightsList: List<String> = listOf("2.5 kg/side", "5 kg/side", "5 kg/side"),
+    val previousSetSummaryMemory: String = "None yet"
+) {
+    val completedSetsCount: Int get() = setCompletedList.count { it }
+}
 
 data class FoodItem(val id: Long, val name: String, val calories: Int, val date: String)
 
@@ -116,6 +129,39 @@ data class StepHistoryEntry(
     val goal: Int,
     val calories: Int
 )
+
+// --- WEIGHT OPTIONS (INCLUDING 2.5 KG/SIDE & DUMBBELLS) ---
+val weightPresetOptions = listOf(
+    "Empty Bar" to 0f,
+    "2.5 kg/side" to 5f,
+    "5 kg/side" to 10f,
+    "7.5 kg/side" to 15f,
+    "10 kg/side" to 20f,
+    "12.5 kg/side" to 25f,
+    "2.5 kg DB" to 5f,
+    "5 kg DB" to 10f,
+    "7.5 kg DB" to 15f,
+    "10 kg DB" to 20f,
+    "12.5 kg DB" to 25f,
+    "15 kg DB" to 30f
+)
+
+fun getKgForWeightLabel(label: String): Float {
+    return weightPresetOptions.firstOrNull { it.first == label }?.second ?: 0f
+}
+
+fun calculateExerciseCalories(ex: WorkoutExercise, state: ExerciseLogState): Int {
+    var total = 0f
+    for (i in 0 until ex.targetSets) {
+        val isDone = state.setCompletedList.getOrElse(i) { false }
+        if (isDone) {
+            val weightLbl = state.setWeightsList.getOrElse(i) { "5 kg/side" }
+            val kg = if (ex.isBodyweightOrTimed) 0f else getKgForWeightLabel(weightLbl)
+            total += (ex.baseCalPerSet + (kg * 0.45f))
+        }
+    }
+    return total.roundToInt()
+}
 
 // --- DEFAULT MON-SUN WORKOUT PLAN ---
 fun getDefaultExercises(): List<WorkoutExercise> = listOf(
@@ -153,51 +199,144 @@ fun getDefaultExercises(): List<WorkoutExercise> = listOf(
     WorkoutExercise("f6", "Fri", "Abs", "Leg Raises (Finisher)", 3, "3 sets", isBodyweightOrTimed = true, baseCalPerSet = 11, visualType = "bodyweight")
 )
 
-val weightPresetOptions = listOf(
-    "Empty Bar" to 0f,
-    "5 kg/side" to 10f,
-    "7.5 kg/side" to 15f,
-    "10 kg/side" to 20f,
-    "5 kg DB" to 10f,
-    "7.5 kg DB" to 15f,
-    "10 kg DB" to 20f,
-    "12.5 kg DB" to 25f,
-    "15 kg DB" to 30f
-)
+// ============================================================================
+// REAL-TIME 24/7 FOREGROUND PEDOMETER SERVICE (ZERO LAG ON APP OPEN)
+// ============================================================================
+class StepForegroundService : Service(), SensorEventListener {
+    private var sensorManager: SensorManager? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createChannels(this)
+        val notif = NotificationCompat.Builder(this, "fittrack_step_service")
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentTitle("FitTrack Live Pedometer Active")
+            .setContentText("Counting your steps in real time...")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+        try {
+            startForeground(9001, notif)
+        } catch (_: Exception) {}
+
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        val stepSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        val detectorSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+
+        stepSensor?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
+        }
+        detectorSensor?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
+        val todayKey = LocalDate.now().toString()
+
+        if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
+            val totalHardwareSteps = event.values[0].toInt()
+            val prevSensorSteps = prefs.getInt("sensor_steps_$todayKey", 0)
+            var savedOffset = prefs.getInt("offset_$todayKey", -1)
+
+            if (savedOffset == -1 || totalHardwareSteps < savedOffset) {
+                savedOffset = totalHardwareSteps - prevSensorSteps.coerceAtLeast(0)
+                prefs.edit().putInt("offset_$todayKey", savedOffset).apply()
+            }
+
+            val newSensorSteps = (totalHardwareSteps - savedOffset).coerceAtLeast(0)
+            val manualOffset = prefs.getInt("manual_steps_$todayKey", 0)
+            val totalSteps = (newSensorSteps + manualOffset).coerceAtLeast(0)
+
+            prefs.edit()
+                .putInt("sensor_steps_$todayKey", newSensorSteps)
+                .putInt("steps_$todayKey", totalSteps)
+                .apply()
+
+            updateAllHomeWidgets(this)
+        } else if (event?.sensor?.type == Sensor.TYPE_STEP_DETECTOR) {
+            // Instant single-step pulse before batch counter even ticks
+            val currentTotal = prefs.getInt("steps_$todayKey", 0) + 1
+            val currentSensor = prefs.getInt("sensor_steps_$todayKey", 0) + 1
+            prefs.edit()
+                .putInt("sensor_steps_$todayKey", currentSensor)
+                .putInt("steps_$todayKey", currentTotal)
+                .apply()
+            updateAllHomeWidgets(this)
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    override fun onBind(intent: Intent?): IBinder? = null
+}
+
+fun createChannels(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val alertChannel = NotificationChannel(
+            "fittrack_reminders",
+            "Smart Workout & Hydration Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        )
+        val serviceChannel = NotificationChannel(
+            "fittrack_step_service",
+            "Live Pedometer Background Sync",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        manager.createNotificationChannel(alertChannel)
+        manager.createNotificationChannel(serviceChannel)
+    }
+}
 
 // ============================================================================
-// MAIN ACTIVITY (WITH PERSISTENT 24/7 STEP SENSOR & SCHEDULED ALARMS)
+// MAIN ACTIVITY (INSTANT SHAREDPREFS LISTENER FOR ZERO-LAG STEP UPDATES)
 // ============================================================================
 class MainActivity : ComponentActivity(), SensorEventListener {
 
     private var sensorManager: SensorManager? = null
-    private var stepSensor: Sensor? = null
-    private var sensorStepsToday by mutableIntStateOf(0)
-    private var manualStepsToday by mutableIntStateOf(0)
+    private var liveStepsState by mutableIntStateOf(0)
+
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        val todayKey = LocalDate.now().toString()
+        if (key == "steps_$todayKey" || key == "sensor_steps_$todayKey") {
+            liveStepsState = prefs.getInt("steps_$todayKey", 0)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        stepSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-
-        // Register hardware step counter continuously (BATCHING = 0 for real-time accuracy)
-        stepSensor?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 0)
-        }
-
-        val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
-        val todayKey = LocalDate.now().toString()
-
-        sensorStepsToday = prefs.getInt("sensor_steps_$todayKey", 0)
-        manualStepsToday = prefs.getInt("manual_steps_$todayKey", 0)
-
-        createNotificationChannel()
+        createChannels(this)
         scheduleAllDailyAlarms(this)
 
-        setContent {
-            val totalLiveSteps = (sensorStepsToday + manualStepsToday).coerceAtLeast(0)
+        val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
 
+        val todayKey = LocalDate.now().toString()
+        liveStepsState = prefs.getInt("steps_$todayKey", 0)
+
+        // Start 24/7 Foreground Step Service + Fast Direct Listener
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
+        }
+        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
+        }
+
+        try {
+            val serviceIntent = Intent(this, StepForegroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (_: Exception) {}
+
+        setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
                     background = BgCozySlate,
@@ -208,15 +347,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             ) {
                 FitTrackMainRoot(
                     prefs = prefs,
-                    steps = totalLiveSteps,
+                    steps = liveStepsState,
                     onCalibrateExactSteps = { exactTargetSteps ->
-                        // Matches Google Fit 100%: sets offset so total equals Google Fit and hardware sensor continues from there
                         val currentKey = LocalDate.now().toString()
-                        manualStepsToday = exactTargetSteps - sensorStepsToday
+                        val currentSensor = prefs.getInt("sensor_steps_$currentKey", 0)
+                        val manualDiff = exactTargetSteps - currentSensor
                         prefs.edit()
-                            .putInt("manual_steps_$currentKey", manualStepsToday)
+                            .putInt("manual_steps_$currentKey", manualDiff)
                             .putInt("steps_$currentKey", exactTargetSteps)
                             .apply()
+                        liveStepsState = exactTargetSteps
                         updateAllHomeWidgets(this@MainActivity)
                     },
                     onRefreshWidgets = {
@@ -227,47 +367,38 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "fittrack_reminders",
-                "Workout & Hydration Schedule",
-                NotificationManager.IMPORTANCE_HIGH
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
+    override fun onResume() {
+        super.onResume()
+        val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
+        val todayKey = LocalDate.now().toString()
+        liveStepsState = prefs.getInt("steps_$todayKey", 0)
+        // Force immediate sensor flush on resume so steps update the instant app opens
+        sensorManager?.flush(this)
     }
 
-    // Do NOT unregister step sensor in onPause() so steps keep counting while screen is off
     override fun onSensorChanged(event: SensorEvent?) {
+        val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
+        val todayKey = LocalDate.now().toString()
+
         if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
             val totalStepsSinceBoot = event.values[0].toInt()
-
-            val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
-            val todayKey = LocalDate.now().toString()
+            val prevSensor = prefs.getInt("sensor_steps_$todayKey", 0)
             var savedBootOffset = prefs.getInt("offset_$todayKey", -1)
 
-            // If new day started or phone rebooted, lock baseline accurately
             if (savedBootOffset == -1 || totalStepsSinceBoot < savedBootOffset) {
-                savedBootOffset = totalStepsSinceBoot - sensorStepsToday.coerceAtLeast(0)
+                savedBootOffset = totalStepsSinceBoot - prevSensor.coerceAtLeast(0)
                 prefs.edit().putInt("offset_$todayKey", savedBootOffset).apply()
             }
 
-            sensorStepsToday = (totalStepsSinceBoot - savedBootOffset).coerceAtLeast(0)
-            manualStepsToday = prefs.getInt("manual_steps_$todayKey", 0)
+            val sensorStepsToday = (totalStepsSinceBoot - savedBootOffset).coerceAtLeast(0)
+            val manualStepsToday = prefs.getInt("manual_steps_$todayKey", 0)
             val totalToday = (sensorStepsToday + manualStepsToday).coerceAtLeast(0)
 
-            // Record timestamps for automatic sleep estimation (first step in morning / last movement at night)
-            val nowHour = LocalTime.now().hour
-            val editor = prefs.edit()
+            liveStepsState = totalToday
+            prefs.edit()
                 .putInt("sensor_steps_$todayKey", sensorStepsToday)
                 .putInt("steps_$todayKey", totalToday)
-
-            if (nowHour in 5..10 && !prefs.contains("first_step_time_$todayKey")) {
-                editor.putString("first_step_time_$todayKey", LocalTime.now().toString().take(5))
-            }
-            editor.putString("last_active_time", LocalTime.now().toString().take(5)).apply()
+                .apply()
 
             updateAllHomeWidgets(this)
         }
@@ -277,14 +408,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 }
 
 // ============================================================================
-// SCHEDULED NOTIFICATIONS (10:30 AM & 4:00 PM WORKOUT + 7:30 AM & 11 AM+ WATER)
+// EXACT SYSTEM NOTIFICATIONS (10:30 AM, 4:00 PM, 7:30 AM, 11 AM+ HOURLY & 4-HR WATER)
 // ============================================================================
 fun scheduleAllDailyAlarms(context: Context) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-    fun setDailyRepeatingAlarm(requestCode: Int, hour: Int, minute: Int, type: String) {
+    fun scheduleExactTimeAlarm(requestCode: Int, hour: Int, minute: Int, type: String) {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = "com.fittrack.app.ACTION_EXACT_ALARM"
             putExtra("REMINDER_TYPE", type)
+            putExtra("REQ_CODE", requestCode)
+            putExtra("HOUR", hour)
+            putExtra("MINUTE", minute)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
@@ -296,35 +431,44 @@ fun scheduleAllDailyAlarms(context: Context) {
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, minute)
             set(Calendar.SECOND, 0)
-            if (before(Calendar.getInstance())) {
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= System.currentTimeMillis()) {
                 add(Calendar.DAY_OF_YEAR, 1)
             }
         }
-        alarmManager.setRepeating(
-            AlarmManager.RTC_WAKEUP,
-            cal.timeInMillis,
-            AlarmManager.INTERVAL_DAY,
-            pendingIntent
-        )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pendingIntent)
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pendingIntent)
+            }
+        } catch (_: SecurityException) {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pendingIntent)
+        }
     }
 
-    // 1. Workout Not Updated Checks: 10:30 AM and 4:00 PM (16:00)
-    setDailyRepeatingAlarm(101, 10, 30, "WORKOUT_CHECK_MORNING")
-    setDailyRepeatingAlarm(102, 16, 0, "WORKOUT_CHECK_AFTERNOON")
+    // 1. Workout Not Updated Notifications: 10:30 AM and 4:00 PM (16:00)
+    scheduleExactTimeAlarm(101, 10, 30, "WORKOUT_CHECK_MORNING")
+    scheduleExactTimeAlarm(102, 16, 0, "WORKOUT_CHECK_AFTERNOON")
 
-    // 2. Water Reminders: 7:30 AM Kickoff + Every 1 hour starting from 11:00 AM to 9:00 PM
-    setDailyRepeatingAlarm(200, 7, 30, "WATER_MORNING_730")
+    // 2. Water Notifications: 7:30 AM + Every 1 hour starting from 11:00 AM to 9:00 PM
+    scheduleExactTimeAlarm(200, 7, 30, "WATER_MORNING_730")
     for (hr in 11..21) {
-        setDailyRepeatingAlarm(200 + hr, hr, 0, "WATER_HOURLY")
+        scheduleExactTimeAlarm(200 + hr, hr, 0, "WATER_HOURLY")
     }
+
+    // 3. Every 4 Hours Water Check Notification (11:30 AM, 3:30 PM, 7:30 PM)
+    scheduleExactTimeAlarm(301, 11, 30, "WATER_4HR_CHECKIN")
+    scheduleExactTimeAlarm(302, 15, 30, "WATER_4HR_CHECKIN")
+    scheduleExactTimeAlarm(303, 19, 30, "WATER_4HR_CHECKIN")
 }
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        createChannels(context)
         val prefs = context.getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
         val todayStr = LocalDate.now().toString()
 
-        // Handle Home Screen Widget Quick Water Button
         when (intent.action) {
             "com.fittrack.app.ACTION_WIDGET_ADD_WATER" -> {
                 val water = prefs.getInt("water_ml_$todayStr", 0) + 250
@@ -341,14 +485,28 @@ class ReminderReceiver : BroadcastReceiver() {
             }
         }
 
+        // Re-schedule the exact alarm for tomorrow automatically!
+        val reqCode = intent.getIntExtra("REQ_CODE", -1)
+        val hour = intent.getIntExtra("HOUR", -1)
+        val minute = intent.getIntExtra("MINUTE", 0)
+        val type = intent.getStringExtra("REMINDER_TYPE") ?: return
+        if (reqCode != -1 && hour != -1) {
+            scheduleAllDailyAlarms(context)
+        }
+
         if (!prefs.getBoolean("notif_enabled", true)) return
 
-        val type = intent.getStringExtra("REMINDER_TYPE") ?: return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
         val openAppIntent = Intent(context, MainActivity::class.java)
         val contentPending = PendingIntent.getActivity(
             context, 0, openAppIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val addWaterIntent = Intent(context, ReminderReceiver::class.java).apply {
+            action = "com.fittrack.app.ACTION_WIDGET_ADD_WATER"
+        }
+        val addWaterPending = PendingIntent.getBroadcast(
+            context, 555, addWaterIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         when (type) {
@@ -358,8 +516,8 @@ class ReminderReceiver : BroadcastReceiver() {
                     val timeLabel = if (type == "WORKOUT_CHECK_MORNING") "10:30 AM" else "4:00 PM"
                     val notif = NotificationCompat.Builder(context, "fittrack_reminders")
                         .setSmallIcon(android.R.drawable.ic_dialog_info)
-                        .setContentTitle("🏋️ $timeLabel Workout Check-In")
-                        .setContentText("You haven't updated today's workout sets yet! Tap to log your progress.")
+                        .setContentTitle("🏋️ $timeLabel Workout Reminder")
+                        .setContentText("You haven't updated your workout sets or 30m routine today! Tap to log.")
                         .setContentIntent(contentPending)
                         .setPriority(NotificationCompat.PRIORITY_HIGH)
                         .setAutoCancel(true)
@@ -370,8 +528,9 @@ class ReminderReceiver : BroadcastReceiver() {
             "WATER_MORNING_730" -> {
                 val notif = NotificationCompat.Builder(context, "fittrack_reminders")
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
-                    .setContentTitle("💧 7:30 AM Morning Hydration!")
-                    .setContentText("Good morning! Start your day with a glass of water (250 ml).")
+                    .setContentTitle("💧 7:30 AM Morning Water Reminder")
+                    .setContentText("Start your morning fresh with a glass of water (250 ml)!")
+                    .addAction(android.R.drawable.ic_input_add, "+250ml Water", addWaterPending)
                     .setContentIntent(contentPending)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setAutoCancel(true)
@@ -383,19 +542,283 @@ class ReminderReceiver : BroadcastReceiver() {
                 val notif = NotificationCompat.Builder(context, "fittrack_reminders")
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setContentTitle("💧 Hourly Water Reminder")
-                    .setContentText("Time to drink a glass of water! Logged today: $currentWater ml.")
+                    .setContentText("Time to drink a glass of water! Today's level: $currentWater ml.")
+                    .addAction(android.R.drawable.ic_input_add, "+250ml Water", addWaterPending)
                     .setContentIntent(contentPending)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setAutoCancel(true)
                     .build()
                 manager.notify(3003, notif)
             }
+            "WATER_4HR_CHECKIN" -> {
+                val currentWater = prefs.getInt("water_ml_$todayStr", 0)
+                val goalWater = prefs.getInt("water_goal_ml", 3000)
+                val notif = NotificationCompat.Builder(context, "fittrack_reminders")
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle("🚰 4-Hour Water Level Check!")
+                    .setContentText("Check-in: You are at $currentWater / $goalWater ml. Tap '+250ml' or open app to update!")
+                    .addAction(android.R.drawable.ic_input_add, "+250ml Water", addWaterPending)
+                    .setContentIntent(contentPending)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .build()
+                manager.notify(3004, notif)
+            }
         }
     }
 }
 
 // ============================================================================
-// 3 HOME SCREEN WIDGET PROVIDERS (2x2, 4x2, 4x3)
+// CUSTOM GRAPHICAL CANVAS RENDERER FOR ALL 3 HOME SCREEN WIDGETS
+// ============================================================================
+object WidgetGraphicRenderer {
+
+    // 1. 2x2 WIDGET: Circular Step Gauge (Steps / Target Ring exactly like Home Page)
+    fun draw2x2CircularWidget(steps: Int, target: Int, cals: Int): Bitmap {
+        val size = 420
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        // Rounded Cozy Slate Card Background
+        paint.color = AndroidColor.parseColor("#1E2235")
+        canvas.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), 64f, 64f, paint)
+
+        // Subtle Inner Border
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 4f
+        paint.color = AndroidColor.parseColor("#323854")
+        canvas.drawRoundRect(RectF(4f, 4f, size - 4f, size - 4f), 60f, 60f, paint)
+
+        // Outer Ring Track
+        val pad = 54f
+        val arcRect = RectF(pad, pad, size - pad, size - pad)
+        paint.strokeWidth = 30f
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = AndroidColor.parseColor("#2D3452")
+        canvas.drawArc(arcRect, 135f, 270f, false, paint)
+
+        // Progress Arc (Gradient Lavender to Mint)
+        val progress = (steps.toFloat() / target.coerceAtLeast(1)).coerceIn(0f, 1f)
+        paint.shader = LinearGradient(
+            0f, 0f, size.toFloat(), size.toFloat(),
+            AndroidColor.parseColor("#C4B5FD"),
+            AndroidColor.parseColor("#6EE7B7"),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawArc(arcRect, 135f, 270f * progress, false, paint)
+        paint.shader = null
+
+        // Center Texts
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+
+        // Step Count
+        paint.color = AndroidColor.WHITE
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = 64f
+        canvas.drawText("$steps", size / 2f, size * 0.48f, paint)
+
+        // Target Subtext
+        paint.color = AndroidColor.parseColor("#94A3B8")
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        paint.textSize = 26f
+        canvas.drawText("/ $target steps", size / 2f, size * 0.58f, paint)
+
+        // Bottom Flame Calorie Pill
+        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = 28f
+        canvas.drawText("🔥 $cals kcal", size / 2f, size * 0.84f, paint)
+
+        return bmp
+    }
+
+    // 2. 4x2 WIDGET: Graphical 4-Card KPI Grid (Steps, Burned Kcal, Distance Km, Water/Sleep)
+    fun draw4x2KpiWidget(steps: Int, target: Int, totalCals: Int, km: String, waterMl: Int, score: Int): Bitmap {
+        val w = 840
+        val h = 400
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        // Background
+        paint.color = AndroidColor.parseColor("#1E2235")
+        canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), 56f, 56f, paint)
+
+        // Top Header Bar
+        paint.color = AndroidColor.WHITE
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = 32f
+        canvas.drawText("FitTrack Daily KPIs", 36f, 58f, paint)
+
+        paint.textAlign = Paint.Align.RIGHT
+        paint.color = AndroidColor.parseColor("#6EE7B7")
+        canvas.drawText("Health Score: $score/100", w - 36f, 58f, paint)
+        paint.textAlign = Paint.Align.LEFT
+
+        // Draw 4 KPI Cards in a 2x2 Grid
+        fun drawKpiTile(left: Float, top: Float, right: Float, bottom: Float, title: String, value: String, sub: String, accentHex: String, pct: Float) {
+            paint.style = Paint.Style.FILL
+            paint.color = AndroidColor.parseColor("#282D46")
+            canvas.drawRoundRect(RectF(left, top, right, bottom), 30f, 30f, paint)
+
+            val accent = AndroidColor.parseColor(accentHex)
+            paint.color = AndroidColor.parseColor("#94A3B8")
+            paint.textSize = 22f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            canvas.drawText(title, left + 24f, top + 40f, paint)
+
+            paint.color = AndroidColor.WHITE
+            paint.textSize = 36f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            canvas.drawText(value, left + 24f, top + 86f, paint)
+
+            paint.color = accent
+            paint.textSize = 20f
+            canvas.drawText(sub, right - 135f, top + 40f, paint)
+
+            // Mini Progress Bar inside KPI Card
+            val barLeft = left + 24f
+            val barRight = right - 24f
+            val barTop = bottom - 26f
+            val barBottom = bottom - 14f
+            paint.color = AndroidColor.parseColor("#1E2235")
+            canvas.drawRoundRect(RectF(barLeft, barTop, barRight, barBottom), 8f, 8f, paint)
+
+            paint.color = accent
+            val fillRight = barLeft + (barRight - barLeft) * pct.coerceIn(0.05f, 1f)
+            canvas.drawRoundRect(RectF(barLeft, barTop, fillRight, barBottom), 8f, 8f, paint)
+        }
+
+        val stepPct = steps.toFloat() / target.coerceAtLeast(1)
+        val calPct = totalCals / 600f
+        val kmPct = (steps * 0.0007f) / 6f
+        val waterPct = waterMl / 3000f
+
+        drawKpiTile(30f, 82f, 405f, 222f, "👟 STEPS", "$steps", "/ $target", "#C4B5FD", stepPct)
+        drawKpiTile(435f, 82f, 810f, 222f, "🔥 CALORIES", "$totalCals kcal", "Active", "#6EE7B7", calPct)
+        drawKpiTile(30f, 240f, 405f, 380f, "📍 DISTANCE", "$km km", "Walked", "#FDBA74", kmPct)
+        drawKpiTile(435f, 240f, 810f, 380f, "💧 HYDRATION", "$waterMl ml", "/ 3000ml", "#93C5FD", waterPct)
+
+        return bmp
+    }
+
+    // 3. 4x3 WIDGET: Full Graphical Fitness Dashboard (Dual Ring + Burn Bars + Sleep/Water Pills)
+    fun draw4x3DashboardWidget(
+        steps: Int,
+        target: Int,
+        stepBurn: Int,
+        routineBurn: Int,
+        gymBurn: Int,
+        waterMl: Int,
+        sleepHrs: Float,
+        score: Int
+    ): Bitmap {
+        val w = 860
+        val h = 620
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        val totalBurn = stepBurn + routineBurn + gymBurn
+
+        // Card Background
+        paint.color = AndroidColor.parseColor("#1E2235")
+        canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), 60f, 60f, paint)
+
+        // Header
+        paint.color = AndroidColor.WHITE
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = 34f
+        canvas.drawText("FitTrack Pro Dashboard", 40f, 64f, paint)
+
+        // Health Score Pill on Top Right
+        paint.color = AndroidColor.parseColor("#282D46")
+        canvas.drawRoundRect(RectF(w - 250f, 24f, w - 36f, 80f), 28f, 28f, paint)
+        paint.color = AndroidColor.parseColor("#FDBA74")
+        paint.textSize = 26f
+        canvas.drawText("⭐ Score: $score/100", w - 230f, 60f, paint)
+
+        // Left Panel: Dual Concentric Activity Rings
+        val ringBox = RectF(50f, 115f, 350f, 415f)
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeWidth = 26f
+        paint.color = AndroidColor.parseColor("#282D46")
+        canvas.drawArc(ringBox, 0f, 360f, false, paint)
+
+        val stepSweep = 360f * (steps.toFloat() / target.coerceAtLeast(1)).coerceIn(0.04f, 1f)
+        paint.color = AndroidColor.parseColor("#C4B5FD")
+        canvas.drawArc(ringBox, -90f, stepSweep, false, paint)
+
+        val innerBox = RectF(86f, 151f, 314f, 379f)
+        paint.color = AndroidColor.parseColor("#282D46")
+        canvas.drawArc(innerBox, 0f, 360f, false, paint)
+
+        val calSweep = 360f * (totalBurn / 600f).coerceIn(0.04f, 1f)
+        paint.color = AndroidColor.parseColor("#6EE7B7")
+        canvas.drawArc(innerBox, -90f, calSweep, false, paint)
+
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+        paint.color = AndroidColor.WHITE
+        paint.textSize = 46f
+        canvas.drawText("$steps", 200f, 255f, paint)
+        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.textSize = 26f
+        canvas.drawText("🔥 $totalBurn kcal", 200f, 295f, paint)
+        paint.textAlign = Paint.Align.LEFT
+
+        // Right Panel: 3 Graphical Calorie Breakdown Bars
+        fun drawStatBar(y: Float, label: String, kcal: Int, maxKcal: Float, hex: String) {
+            paint.color = AndroidColor.parseColor("#F8FAFC")
+            paint.textSize = 25f
+            canvas.drawText(label, 395f, y, paint)
+
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = AndroidColor.parseColor(hex)
+            canvas.drawText("$kcal kcal", w - 45f, y, paint)
+            paint.textAlign = Paint.Align.LEFT
+
+            val barTop = y + 14f
+            paint.color = AndroidColor.parseColor("#282D46")
+            canvas.drawRoundRect(RectF(395f, barTop, w - 45f, barTop + 22f), 11f, 11f, paint)
+
+            val fillW = (w - 440f) * (kcal / maxKcal).coerceIn(0.05f, 1f)
+            paint.color = AndroidColor.parseColor(hex)
+            canvas.drawRoundRect(RectF(395f, barTop, 395f + fillW, barTop + 22f), 11f, 11f, paint)
+        }
+
+        drawStatBar(155f, "👟 Walk Burn", stepBurn, 350f, "#C4B5FD")
+        drawStatBar(255f, "⏱️ 30m Routine", routineBurn, 250f, "#FDBA74")
+        drawStatBar(355f, "🏋️ Gym Split", gymBurn, 350f, "#6EE7B7")
+
+        // Bottom Row KPI Pills (Water & Sleep) leaving space on bottom-right for interactive button
+        paint.color = AndroidColor.parseColor("#282D46")
+        canvas.drawRoundRect(RectF(40f, 465f, 300f, 575f), 28f, 28f, paint)
+        canvas.drawRoundRect(RectF(320f, 465f, 560f, 575f), 28f, 28f, paint)
+
+        paint.color = AndroidColor.parseColor("#93C5FD")
+        paint.textSize = 24f
+        canvas.drawText("💧 WATER LEVEL", 64f, 508f, paint)
+        paint.color = AndroidColor.WHITE
+        paint.textSize = 32f
+        canvas.drawText("$waterMl / 3000 ml", 64f, 552f, paint)
+
+        paint.color = AndroidColor.parseColor("#FDBA74")
+        paint.textSize = 24f
+        canvas.drawText("😴 SLEEP LOG", 344f, 508f, paint)
+        paint.color = AndroidColor.WHITE
+        paint.textSize = 32f
+        canvas.drawText("$sleepHrs hrs", 344f, 552f, paint)
+
+        return bmp
+    }
+}
+
+// ============================================================================
+// 3 HOME SCREEN WIDGET PROVIDERS (USING BITMAP GRAPHICS)
 // ============================================================================
 fun calculateHealthScoreFromPrefs(prefs: SharedPreferences, todayStr: String): Int {
     val steps = prefs.getInt("steps_$todayStr", 0)
@@ -419,8 +842,10 @@ fun updateAllHomeWidgets(context: Context) {
     val steps = prefs.getInt("steps_$todayStr", 0)
     val stepGoal = prefs.getInt("step_target", 8000)
     val stepBurn = (steps * 0.04f).roundToInt()
-    val workoutBurn = prefs.getInt("workout_burn_$todayStr", 0)
-    val totalBurn = stepBurn + workoutBurn
+    val routineBurn = prefs.getInt("routine_burn_$todayStr", 0)
+    val splitBurn = prefs.getInt("split_burn_$todayStr", 0)
+    val totalBurn = stepBurn + routineBurn + splitBurn
+    val distanceKm = String.format(Locale.US, "%.2f", steps * 0.0007f)
     val waterMl = prefs.getInt("water_ml_$todayStr", 0)
     val sleepHrs = prefs.getFloat("sleep_hrs_$todayStr", 7.5f)
     val score = calculateHealthScoreFromPrefs(prefs, todayStr)
@@ -430,44 +855,47 @@ fun updateAllHomeWidgets(context: Context) {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    // 1. Update 2x2 Widgets
+    // 1. Render & Push 2x2 Circular Gauge Widget
     val ids2x2 = manager.getAppWidgetIds(ComponentName(context, WidgetCompact2x2::class.java))
-    for (id in ids2x2) {
-        val views = RemoteViews(context.packageName, R.layout.widget_2x2)
-        views.setTextViewText(R.id.w2x2_steps, "$steps")
-        views.setTextViewText(R.id.w2x2_cals, "🔥 $totalBurn kcal")
-        views.setTextViewText(R.id.w2x2_score, "Health Score: $score/100")
-        views.setOnClickPendingIntent(R.id.widget_root_2x2, openAppIntent)
-        manager.updateAppWidget(id, views)
+    if (ids2x2.isNotEmpty()) {
+        val bmp2x2 = WidgetGraphicRenderer.draw2x2CircularWidget(steps, stepGoal, totalBurn)
+        for (id in ids2x2) {
+            val views = RemoteViews(context.packageName, R.layout.widget_2x2)
+            views.setImageViewBitmap(R.id.img_canvas_2x2, bmp2x2)
+            views.setOnClickPendingIntent(R.id.widget_root_2x2, openAppIntent)
+            manager.updateAppWidget(id, views)
+        }
     }
 
-    // 2. Update 4x2 Widgets
+    // 2. Render & Push 4x2 KPI Cards Widget
     val ids4x2 = manager.getAppWidgetIds(ComponentName(context, WidgetSummary4x2::class.java))
-    for (id in ids4x2) {
-        val views = RemoteViews(context.packageName, R.layout.widget_4x2)
-        views.setTextViewText(R.id.w4x2_total_cal, "🔥 $totalBurn kcal")
-        views.setTextViewText(R.id.w4x2_steps_line, "👟 Steps: $steps / $stepGoal ($stepBurn kcal)")
-        views.setTextViewText(R.id.w4x2_workout_line, "🏋️ 30m Routine + Split: $workoutBurn kcal")
-        views.setTextViewText(R.id.w4x2_water_sleep_line, "💧 Water: $waterMl ml  •  😴 Sleep: $sleepHrs hrs")
-        views.setOnClickPendingIntent(R.id.widget_root_4x2, openAppIntent)
-        manager.updateAppWidget(id, views)
+    if (ids4x2.isNotEmpty()) {
+        val bmp4x2 = WidgetGraphicRenderer.draw4x2KpiWidget(steps, stepGoal, totalBurn, distanceKm, waterMl, score)
+        for (id in ids4x2) {
+            val views = RemoteViews(context.packageName, R.layout.widget_4x2)
+            views.setImageViewBitmap(R.id.img_canvas_4x2, bmp4x2)
+            views.setOnClickPendingIntent(R.id.widget_root_4x2, openAppIntent)
+            manager.updateAppWidget(id, views)
+        }
     }
 
-    // 3. Update 4x3 Interactive Widgets
+    // 3. Render & Push 4x3 Visual Dashboard Widget
     val ids4x3 = manager.getAppWidgetIds(ComponentName(context, WidgetDashboard4x3::class.java))
-    val addWaterPending = PendingIntent.getBroadcast(
-        context, 502, Intent(context, ReminderReceiver::class.java).apply { action = "com.fittrack.app.ACTION_WIDGET_ADD_WATER" },
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
-
-    for (id in ids4x3) {
-        val views = RemoteViews(context.packageName, R.layout.widget_4x3)
-        views.setTextViewText(R.id.w4x3_score, "Score: $score/100")
-        views.setTextViewText(R.id.w4x3_summary, "👟 $steps steps  |  🔥 $totalBurn kcal burned")
-        views.setTextViewText(R.id.w4x3_sub, "💧 Water: $waterMl / 3000 ml   •   😴 Sleep: $sleepHrs hrs")
-        views.setOnClickPendingIntent(R.id.widget_root_4x3, openAppIntent)
-        views.setOnClickPendingIntent(R.id.btn_widget_water, addWaterPending)
-        manager.updateAppWidget(id, views)
+    if (ids4x3.isNotEmpty()) {
+        val bmp4x3 = WidgetGraphicRenderer.draw4x3DashboardWidget(
+            steps, stepGoal, stepBurn, routineBurn, splitBurn, waterMl, sleepHrs, score
+        )
+        val addWaterPending = PendingIntent.getBroadcast(
+            context, 502, Intent(context, ReminderReceiver::class.java).apply { action = "com.fittrack.app.ACTION_WIDGET_ADD_WATER" },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        for (id in ids4x3) {
+            val views = RemoteViews(context.packageName, R.layout.widget_4x3)
+            views.setImageViewBitmap(R.id.img_canvas_4x3, bmp4x3)
+            views.setOnClickPendingIntent(R.id.widget_root_4x3, openAppIntent)
+            views.setOnClickPendingIntent(R.id.btn_widget_water, addWaterPending)
+            manager.updateAppWidget(id, views)
+        }
     }
 }
 
@@ -490,7 +918,23 @@ class WidgetDashboard4x3 : AppWidgetProvider() {
 }
 
 // ============================================================================
-// COMPOSABLE ROOT (OPTION B FRIENDLY SLATE UI)
+// HELPER: AUTO-CALCULATE SLEEP HOURS FROM BEDTIME & WAKE TIME
+// ============================================================================
+fun calculateSleepHours(bedHour12: Int, bedMin: Int, bedAmPm: String, wakeHour12: Int, wakeMin: Int, wakeAmPm: String): Float {
+    fun to24HrMinutes(h12: Int, min: Int, amPm: String): Int {
+        var h = h12 % 12
+        if (amPm.uppercase() == "PM") h += 12
+        return h * 60 + min
+    }
+    val bedTotalMin = to24HrMinutes(bedHour12, bedMin, bedAmPm)
+    val wakeTotalMin = to24HrMinutes(wakeHour12, wakeMin, wakeAmPm)
+    var diffMin = wakeTotalMin - bedTotalMin
+    if (diffMin <= 0) diffMin += 24 * 60 // Slept past midnight
+    return ((diffMin / 60f) * 10f).roundToInt() / 10f
+}
+
+// ============================================================================
+// COMPOSABLE ROOT
 // ============================================================================
 @Composable
 fun FitTrackMainRoot(
@@ -523,13 +967,12 @@ fun FitTrackMainRoot(
         if (perms.isNotEmpty()) permissionLauncher.launch(perms.toTypedArray())
     }
 
-    // --- STATE VARIABLES ---
     var stepTarget by remember { mutableIntStateOf(prefs.getInt("step_target", 8000)) }
     var userBodyWeightKg by remember { mutableIntStateOf(prefs.getInt("body_weight_kg", 70)) }
     var daily30MinDefaultCals by remember { mutableIntStateOf(prefs.getInt("daily_30m_cals", 185)) }
     var notificationsEnabled by remember { mutableStateOf(prefs.getBoolean("notif_enabled", true)) }
 
-    // Separate 30-Min Routine toggle for each day of the week (Mon - Sun)
+    // Separate 30-Min Routine toggle for each day (Mon - Sun)
     val daily30MinByDay = remember {
         mutableStateMapOf<String, Boolean>().apply {
             listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach { day ->
@@ -538,27 +981,13 @@ fun FitTrackMainRoot(
         }
     }
 
-    // Water & Sleep State
     var waterIntakeMl by remember { mutableIntStateOf(prefs.getInt("water_ml_$todayStr", 0)) }
     var waterGoalMl by remember { mutableIntStateOf(prefs.getInt("water_goal_ml", 3000)) }
     var sleepHoursToday by remember { mutableFloatStateOf(prefs.getFloat("sleep_hrs_$todayStr", 7.5f)) }
     var sleepBedtime by remember { mutableStateOf(prefs.getString("sleep_bed_$todayStr", "11:30 PM") ?: "11:30 PM") }
-    var sleepWakeTime by remember {
-        val autoWake = prefs.getString("first_step_time_$todayStr", "07:00 AM") ?: "07:00 AM"
-        mutableStateOf(prefs.getString("sleep_wake_$todayStr", autoWake) ?: autoWake)
-    }
+    var sleepWakeTime by remember { mutableStateOf(prefs.getString("sleep_wake_$todayStr", "07:00 AM") ?: "07:00 AM") }
 
-    // 4-Hour In-App Water Check-in Dialog
-    var show4HourWaterCheckIn by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        val lastCheckMs = prefs.getLong("last_water_check_ms", 0L)
-        val fourHoursMs = 4 * 60 * 60 * 1000L
-        if (System.currentTimeMillis() - lastCheckMs >= fourHoursMs) {
-            show4HourWaterCheckIn = true
-        }
-    }
-
-    // --- EXERCISES & LOGS ---
+    // --- EXERCISES & DYNAMIC PER-SET LOGS ---
     val exercisesList = remember {
         mutableStateListOf<WorkoutExercise>().apply {
             val savedJson = prefs.getString("custom_exercises_json", null)
@@ -590,15 +1019,9 @@ fun FitTrackMainRoot(
         val arr = JSONArray()
         exercisesList.forEach { ex ->
             arr.put(JSONObject().apply {
-                put("id", ex.id)
-                put("day", ex.day)
-                put("muscleGroup", ex.muscleGroup)
-                put("name", ex.name)
-                put("targetSets", ex.targetSets)
-                put("targetNote", ex.targetNote)
-                put("isBody", ex.isBodyweightOrTimed)
-                put("baseCal", ex.baseCalPerSet)
-                put("visualType", ex.visualType)
+                put("id", ex.id); put("day", ex.day); put("muscleGroup", ex.muscleGroup)
+                put("name", ex.name); put("targetSets", ex.targetSets); put("targetNote", ex.targetNote)
+                put("isBody", ex.isBodyweightOrTimed); put("baseCal", ex.baseCalPerSet); put("visualType", ex.visualType)
             })
         }
         prefs.edit().putString("custom_exercises_json", arr.toString()).apply()
@@ -608,21 +1031,35 @@ fun FitTrackMainRoot(
 
     fun loadLogsFromPrefs() {
         exercisesList.forEach { ex ->
-            val sets = prefs.getInt("log_sets_${ex.id}", 0)
-            val weightLbl = prefs.getString("log_wlbl_${ex.id}", if (ex.isBodyweightOrTimed) "Bodyweight" else "5 kg/side") ?: "5 kg/side"
-            val mult = prefs.getFloat("log_mult_${ex.id}", if (ex.isBodyweightOrTimed) 0f else 10f)
-            val prevMem = prefs.getString("mem_weight_${ex.id}", "5 kg/side") ?: "5 kg/side"
-            exerciseLogs[ex.id] = ExerciseLogState(sets, weightLbl, mult, prevMem)
+            val doneCsv = prefs.getString("set_done_csv_${ex.id}", null)
+            val weightsCsv = prefs.getString("set_weights_csv_${ex.id}", null)
+            val prevMem = prefs.getString("mem_weight_${ex.id}", "Set 1: 2.5 kg/side") ?: "Set 1: 2.5 kg/side"
+
+            val doneList = if (doneCsv != null) {
+                doneCsv.split(",").map { it == "1" }
+            } else {
+                List(ex.targetSets) { false }
+            }
+            val weightsList = if (weightsCsv != null) {
+                weightsCsv.split("|")
+            } else {
+                List(ex.targetSets) { idx ->
+                    if (ex.isBodyweightOrTimed) "Bodyweight"
+                    else if (idx == 0) "2.5 kg/side" else "5 kg/side"
+                }
+            }
+            exerciseLogs[ex.id] = ExerciseLogState(doneList, weightsList, prevMem)
         }
     }
 
     fun saveSingleLogToPrefs(id: String, state: ExerciseLogState) {
         exerciseLogs[id] = state
+        val doneCsv = state.setCompletedList.joinToString(",") { if (it) "1" else "0" }
+        val weightsCsv = state.setWeightsList.joinToString("|")
         prefs.edit()
-            .putInt("log_sets_$id", state.completedSets)
-            .putString("log_wlbl_$id", state.selectedWeightLabel)
-            .putFloat("log_mult_$id", state.loadMultiplierKg)
-            .putString("mem_weight_$id", state.previousWeightMemory)
+            .putString("set_done_csv_$id", doneCsv)
+            .putString("set_weights_csv_$id", weightsCsv)
+            .putString("mem_weight_$id", state.previousSetSummaryMemory)
             .putBoolean("workout_updated_$todayStr", true)
             .apply()
     }
@@ -653,16 +1090,26 @@ fun FitTrackMainRoot(
     fun archiveAndResetWeekForMonday() {
         exercisesList.forEach { ex ->
             val st = exerciseLogs[ex.id]
-            if (st != null && st.completedSets > 0) {
-                val cals = (st.completedSets * (ex.baseCalPerSet + (st.loadMultiplierKg * 0.45f))).roundToInt()
+            if (st != null && st.completedSetsCount > 0) {
+                val cals = calculateExerciseCalories(ex, st)
+                val usedSummary = st.setWeightsList.mapIndexedNotNull { idx, w ->
+                    if (st.setCompletedList.getOrElse(idx) { false }) "S${idx + 1}:$w" else null
+                }.joinToString(", ")
+
                 workoutHistoryList.add(
                     0,
                     WorkoutHistoryEntry(
                         System.currentTimeMillis() + ex.id.hashCode(),
-                        todayStr, ex.day, ex.name, st.completedSets, st.selectedWeightLabel, cals
+                        todayStr, ex.day, ex.name, st.completedSetsCount, usedSummary, cals
                     )
                 )
-                saveSingleLogToPrefs(ex.id, st.copy(completedSets = 0, previousWeightMemory = st.selectedWeightLabel))
+                saveSingleLogToPrefs(
+                    ex.id,
+                    st.copy(
+                        setCompletedList = List(ex.targetSets) { false },
+                        previousSetSummaryMemory = usedSummary
+                    )
+                )
             }
         }
 
@@ -673,12 +1120,7 @@ fun FitTrackMainRoot(
                     0,
                     WorkoutHistoryEntry(
                         System.currentTimeMillis() + day.hashCode(),
-                        todayStr,
-                        day,
-                        "Daily 30-Min Routine & Warm-Up",
-                        1,
-                        "5 kg Squats + Pushups",
-                        daily30MinDefaultCals
+                        todayStr, day, "Daily 30-Min Routine & Warm-Up", 1, "5 kg Squats + Pushups", daily30MinDefaultCals
                     )
                 )
                 daily30MinByDay[day] = false
@@ -709,20 +1151,25 @@ fun FitTrackMainRoot(
 
     val foodLogs = remember { mutableStateListOf<FoodItem>() }
 
-    // --- CALORIES & HEALTH SCORE (0 - 100) ---
+    // --- CALORIE & SCORE MATH ---
     val stepCalories = (steps * (userBodyWeightKg / 70f) * 0.04f).roundToInt()
     val todayShortDay = today.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
     val daily30MinCalories = if (daily30MinByDay[todayShortDay] == true) daily30MinDefaultCals else 0
     val splitWorkoutCalories = exercisesList.sumOf { ex ->
         val st = exerciseLogs[ex.id] ?: ExerciseLogState()
-        (st.completedSets * (ex.baseCalPerSet + (st.loadMultiplierKg * 0.45f))).roundToInt()
+        calculateExerciseCalories(ex, st)
     }
     val totalWorkoutBurn = daily30MinCalories + splitWorkoutCalories
     val totalBurnedCalories = stepCalories + totalWorkoutBurn
     val totalEatenCalories = foodLogs.sumOf { it.calories }
 
-    LaunchedEffect(totalWorkoutBurn, steps, waterIntakeMl, sleepHoursToday) {
-        prefs.edit().putInt("workout_burn_$todayStr", totalWorkoutBurn).apply()
+    LaunchedEffect(daily30MinCalories, splitWorkoutCalories, steps, waterIntakeMl, sleepHoursToday) {
+        prefs.edit()
+            .putInt("routine_burn_$todayStr", daily30MinCalories)
+            .putInt("split_burn_$todayStr", splitWorkoutCalories)
+            .putInt("workout_burn_$todayStr", totalWorkoutBurn)
+            .apply()
+
         val stepCals = (steps * 0.04f).roundToInt()
         val existingIdx = stepHistoryList.indexOfFirst { it.date == todayStr }
         val todayEntry = StepHistoryEntry(todayStr, steps, stepTarget, stepCals)
@@ -738,7 +1185,6 @@ fun FitTrackMainRoot(
         onRefreshWidgets()
     }
 
-    // Health Score Calculation (25 pts Steps + 25 pts Workout + 25 pts Water + 25 pts Sleep)
     val stepScore = ((steps.toFloat() / stepTarget.coerceAtLeast(1)) * 25f).coerceIn(0f, 25f).roundToInt()
     val workoutScore = ((totalWorkoutBurn.toFloat() / 300f) * 25f).coerceIn(0f, 25f).roundToInt()
     val waterScore = ((waterIntakeMl.toFloat() / waterGoalMl.coerceAtLeast(1)) * 25f).coerceIn(0f, 25f).roundToInt()
@@ -803,10 +1249,7 @@ fun FitTrackMainRoot(
                     },
                     onAddWaterMl = { addedMl ->
                         waterIntakeMl = (waterIntakeMl + addedMl).coerceAtLeast(0)
-                        prefs.edit()
-                            .putInt("water_ml_$todayStr", waterIntakeMl)
-                            .putLong("last_water_check_ms", System.currentTimeMillis())
-                            .apply()
+                        prefs.edit().putInt("water_ml_$todayStr", waterIntakeMl).apply()
                         onRefreshWidgets()
                     },
                     onUpdateSleep = { hrs, bed, wake ->
@@ -837,7 +1280,14 @@ fun FitTrackMainRoot(
                     onAddExercise = { newEx ->
                         exercisesList.add(newEx)
                         saveExercisesToPrefs()
-                        saveSingleLogToPrefs(newEx.id, ExerciseLogState(0, if (newEx.isBodyweightOrTimed) "Bodyweight" else "5 kg/side", 10f, "New"))
+                        saveSingleLogToPrefs(
+                            newEx.id,
+                            ExerciseLogState(
+                                List(newEx.targetSets) { false },
+                                List(newEx.targetSets) { if (newEx.isBodyweightOrTimed) "Bodyweight" else "2.5 kg/side" },
+                                "New"
+                            )
+                        )
                     },
                     onEditExercise = { updatedEx ->
                         val idx = exercisesList.indexOfFirst { it.id == updatedEx.id }
@@ -883,6 +1333,13 @@ fun FitTrackMainRoot(
                         notificationsEnabled = it
                         prefs.edit().putBoolean("notif_enabled", it).apply()
                     },
+                    onTestSystemNotification = {
+                        val intent = Intent(context, ReminderReceiver::class.java).apply {
+                            action = "com.fittrack.app.ACTION_EXACT_ALARM"
+                            putExtra("REMINDER_TYPE", "WATER_4HR_CHECKIN")
+                        }
+                        context.sendBroadcast(intent)
+                    },
                     onResetDefaultWorkouts = {
                         exercisesList.clear()
                         exercisesList.addAll(getDefaultExercises())
@@ -893,62 +1350,10 @@ fun FitTrackMainRoot(
             }
         }
     }
-
-    // --- 4-HOUR AUTOMATIC WATER CHECK-IN POPUP ---
-    if (show4HourWaterCheckIn) {
-        AlertDialog(
-            onDismissRequest = {
-                prefs.edit().putLong("last_water_check_ms", System.currentTimeMillis()).apply()
-                show4HourWaterCheckIn = false
-            },
-            containerColor = CardSlate,
-            title = { Text("💧 4-Hour Hydration Check-In!", color = TextSoftWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "It's been 4 hours! How much water did you drink recently? (Current today: $waterIntakeMl / $waterGoalMl ml)",
-                        color = TextMuted,
-                        fontSize = 13.sp
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf(250, 500, 750).forEach { ml ->
-                            Button(
-                                onClick = {
-                                    waterIntakeMl += ml
-                                    prefs.edit()
-                                        .putInt("water_ml_$todayStr", waterIntakeMl)
-                                        .putLong("last_water_check_ms", System.currentTimeMillis())
-                                        .apply()
-                                    onRefreshWidgets()
-                                    show4HourWaterCheckIn = false
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PastelSky),
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(vertical = 8.dp)
-                            ) {
-                                Text("+${ml}ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    prefs.edit().putLong("last_water_check_ms", System.currentTimeMillis()).apply()
-                    show4HourWaterCheckIn = false
-                }) {
-                    Text("Skip for Now", color = PastelLavender)
-                }
-            }
-        )
-    }
 }
 
 // ============================================================================
-// TAB 1: OPTION B FRIENDLY DASHBOARD (NO +500 BUTTON, GOOGLE FIT SYNC, WATER, SLEEP)
+// TAB 1: DASHBOARD (WITH AUTO-CALCULATED SLEEP DIALOG)
 // ============================================================================
 @Composable
 fun Tab1FriendlyDashboard(
@@ -978,14 +1383,14 @@ fun Tab1FriendlyDashboard(
     var showCalibrateDialog by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showAddFoodDialog by remember { mutableStateOf(false) }
-    val distanceKm = String.format("%.2f", steps * 0.0007f)
+    val distanceKm = String.format(Locale.US, "%.2f", steps * 0.0007f)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(vertical = 18.dp)
     ) {
-        // --- 1. TOP GREETING & DAILY HEALTH SCORE CARD ---
+        // 1. HEALTH SCORE
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1000,12 +1405,7 @@ fun Tab1FriendlyDashboard(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Daily Health Score", color = PastelLavender, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "$totalHealthScore / 100",
-                                color = TextSoftWhite,
-                                fontSize = 28.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
+                            Text("$totalHealthScore / 100", color = TextSoftWhite, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
                             Text(
                                 when {
                                     totalHealthScore >= 85 -> "🌟 Peak Recovery & Activity!"
@@ -1018,10 +1418,7 @@ fun Tab1FriendlyDashboard(
                         }
                         Box(
                             contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(68.dp)
-                                .clip(CircleShape)
-                                .background(CardElevated)
+                            modifier = Modifier.size(68.dp).clip(CircleShape).background(CardElevated)
                         ) {
                             CircularProgressIndicator(
                                 progress = { totalHealthScore / 100f },
@@ -1033,13 +1430,8 @@ fun Tab1FriendlyDashboard(
                             Text("$totalHealthScore%", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         }
                     }
-
                     Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         ScorePillarChip("👟 Steps", "$stepScore/25", PastelLavender)
                         ScorePillarChip("🏋️ Gym", "$workoutScore/25", PastelMint)
                         ScorePillarChip("💧 Water", "$waterScore/25", PastelSky)
@@ -1049,7 +1441,7 @@ fun Tab1FriendlyDashboard(
             }
         }
 
-        // --- 2. OPTION B DUAL PASTEL RINGS (PEDOMETER + CALORIE BURN SUMMARY) ---
+        // 2. LIVE PEDOMETER & CALORIE RINGS
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1062,9 +1454,12 @@ fun Tab1FriendlyDashboard(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Pedometer & Calorie Stats", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Column {
+                            Text("Live Pedometer & Burn", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text("Real-Time 24/7 Sensor Active", color = PastelMint, fontSize = 11.sp)
+                        }
                         TextButton(onClick = { showCalibrateDialog = true }) {
-                            Text("Sync Google Fit / Goal", color = PastelLavender, fontSize = 12.sp)
+                            Text("Sync / Goal", color = PastelLavender, fontSize = 12.sp)
                         }
                     }
 
@@ -1075,14 +1470,8 @@ fun Tab1FriendlyDashboard(
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Left Ring: Lavender Step Gauge
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                            CircularProgressIndicator(
-                                progress = { 1f },
-                                modifier = Modifier.fillMaxSize(),
-                                color = CardElevated,
-                                strokeWidth = 12.dp
-                            )
+                            CircularProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxSize(), color = CardElevated, strokeWidth = 12.dp)
                             CircularProgressIndicator(
                                 progress = { (steps.toFloat() / stepTarget.coerceAtLeast(1)).coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxSize(),
@@ -1097,14 +1486,8 @@ fun Tab1FriendlyDashboard(
                             }
                         }
 
-                        // Right Ring: Mint Active Calorie Burn Gauge
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                            CircularProgressIndicator(
-                                progress = { 1f },
-                                modifier = Modifier.fillMaxSize(),
-                                color = CardElevated,
-                                strokeWidth = 12.dp
-                            )
+                            CircularProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxSize(), color = CardElevated, strokeWidth = 12.dp)
                             CircularProgressIndicator(
                                 progress = { (totalBurnedCalories / 600f).coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxSize(),
@@ -1122,10 +1505,7 @@ fun Tab1FriendlyDashboard(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         StatRow("Walk Burn", "$stepCalories kcal", PastelLavender)
                         StatRow("30m Routine", "$daily30MinCalories kcal", PastelPeach)
                         StatRow("Gym Split", "$splitWorkoutCalories kcal", PastelMint)
@@ -1144,7 +1524,7 @@ fun Tab1FriendlyDashboard(
             }
         }
 
-        // --- 3. HYDRATION / WATER TRACKER CARD ---
+        // 3. WATER TRACKER
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1159,52 +1539,30 @@ fun Tab1FriendlyDashboard(
                     ) {
                         Column {
                             Text("💧 Water & Hydration Tracker", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Reminders: 7:30 AM & hourly from 11:00 AM", color = TextMuted, fontSize = 11.sp)
+                            Text("System Notifications: 7:30 AM, Hourly (11 AM+) & 4-Hr Check", color = TextMuted, fontSize = 11.sp)
                         }
-                        Text(
-                            "$waterIntakeMl / $waterGoalMl ml",
-                            color = PastelSky,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
-                        )
+                        Text("$waterIntakeMl / $waterGoalMl ml", color = PastelSky, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
                     }
-
                     Spacer(modifier = Modifier.height(10.dp))
-
                     LinearProgressIndicator(
                         progress = { (waterIntakeMl.toFloat() / waterGoalMl.coerceAtLeast(1)).coerceIn(0f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(50)),
+                        modifier = Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(50)),
                         color = PastelSky,
                         trackColor = CardElevated
                     )
-
                     Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { onAddWaterMl(250) },
                             colors = ButtonDefaults.buttonColors(containerColor = PastelSky),
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text("🥛 +250 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
+                        ) { Text("🥛 +250 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
                         Button(
                             onClick = { onAddWaterMl(500) },
                             colors = ButtonDefaults.buttonColors(containerColor = PastelMint),
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text("🍶 +500 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = { onAddWaterMl(-250) },
-                            modifier = Modifier.weight(0.7f)
-                        ) {
+                        ) { Text("🍶 +500 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                        OutlinedButton(onClick = { onAddWaterMl(-250) }, modifier = Modifier.weight(0.7f)) {
                             Text("-250", color = TextMuted, fontSize = 12.sp)
                         }
                     }
@@ -1212,7 +1570,7 @@ fun Tab1FriendlyDashboard(
             }
         }
 
-        // --- 4. SLEEP SCHEDULE & RECOVERY TRACKER ---
+        // 4. SLEEP TRACKER (AUTO-CALCULATES HOURS FROM START & WAKE TIME)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1226,22 +1584,22 @@ fun Tab1FriendlyDashboard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("😴 Sleep Schedule & Recovery", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Slept: $sleepBedtime  •  Woke: $sleepWakeTime", color = PastelPeach, fontSize = 12.sp)
+                            Text("😴 Sleep Schedule (Auto-Calculated)", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text("Slept: $sleepBedtime  ➔  Woke: $sleepWakeTime", color = PastelPeach, fontSize = 12.sp)
                         }
                         Button(
                             onClick = { showSleepDialog = true },
                             colors = ButtonDefaults.buttonColors(containerColor = CardElevated),
                             shape = RoundedCornerShape(50)
                         ) {
-                            Text("${sleepHoursToday}h (Edit)", color = PastelPeach, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("${sleepHoursToday} hrs (Set Times)", color = PastelPeach, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }
             }
         }
 
-        // --- 5. EAT & TRACK (CHOCOLATES / ICE CREAMS / DESSERTS) ---
+        // 5. EAT & TRACK
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1256,7 +1614,7 @@ fun Tab1FriendlyDashboard(
                     ) {
                         Column {
                             Text("🍫 Eat & Track (Treats / Desserts)", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Log only when eating chocolates, ice cream or extras", color = TextMuted, fontSize = 11.sp)
+                            Text("Log chocolates, ice cream or extra treats", color = TextMuted, fontSize = 11.sp)
                         }
                         Button(
                             onClick = { showAddFoodDialog = true },
@@ -1267,19 +1625,14 @@ fun Tab1FriendlyDashboard(
                             Text("+ Add Treat", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
-
                     Spacer(modifier = Modifier.height(10.dp))
-
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         val quickTreats = listOf(
-                            "🍫 Chocolate" to 230,
-                            "🍨 Ice Cream" to 210,
-                            "🍦 Magnum Cone" to 280,
-                            "🍰 Sweet/Cake" to 320,
-                            "🥤 Cold Drink" to 150
+                            "🍫 Chocolate" to 230, "🍨 Ice Cream" to 210,
+                            "🍦 Magnum Cone" to 280, "🍰 Sweet/Cake" to 320, "🥤 Cold Drink" to 150
                         )
                         quickTreats.forEach { (label, cal) ->
                             AssistChip(
@@ -1289,7 +1642,6 @@ fun Tab1FriendlyDashboard(
                             )
                         }
                     }
-
                     if (foodLogs.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(10.dp))
                         foodLogs.forEach { item ->
@@ -1317,7 +1669,6 @@ fun Tab1FriendlyDashboard(
         }
     }
 
-    // --- GOOGLE FIT CALIBRATION & STEP GOAL DIALOG ---
     if (showCalibrateDialog) {
         var exactGoogleFitSteps by remember { mutableStateOf(steps.toString()) }
         var targetInput by remember { mutableStateOf(stepTarget.toString()) }
@@ -1327,11 +1678,6 @@ fun Tab1FriendlyDashboard(
             title = { Text("Sync with Google Fit & Step Goal", color = TextSoftWhite) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "If Google Fit shows more steps from earlier today, enter your current Google Fit step count below once. The hardware sensor will lock onto it and count every step accurately!",
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
                     OutlinedTextField(
                         value = exactGoogleFitSteps,
                         onValueChange = { exactGoogleFitSteps = it },
@@ -1361,42 +1707,99 @@ fun Tab1FriendlyDashboard(
         )
     }
 
-    // --- SLEEP SCHEDULE DIALOG ---
+    // --- AUTO-CALCULATING SLEEP DIALOG (START TIME & WAKE UP TIME -> HOURS) ---
     if (showSleepDialog) {
-        var hrsInput by remember { mutableStateOf(sleepHoursToday.toString()) }
-        var bedInput by remember { mutableStateOf(sleepBedtime) }
-        var wakeInput by remember { mutableStateOf(sleepWakeTime) }
+        var bedHr by remember { mutableStateOf("11") }
+        var bedMin by remember { mutableStateOf("30") }
+        var bedAmPm by remember { mutableStateOf("PM") }
+
+        var wakeHr by remember { mutableStateOf("7") }
+        var wakeMin by remember { mutableStateOf("00") }
+        var wakeAmPm by remember { mutableStateOf("AM") }
+
+        val previewCalculatedHours = calculateSleepHours(
+            bedHr.toIntOrNull() ?: 11,
+            bedMin.toIntOrNull() ?: 30,
+            bedAmPm,
+            wakeHr.toIntOrNull() ?: 7,
+            wakeMin.toIntOrNull() ?: 0,
+            wakeAmPm
+        )
+
         AlertDialog(
             onDismissRequest = { showSleepDialog = false },
             containerColor = CardSlate,
-            title = { Text("Update Sleep Schedule", color = TextSoftWhite) },
+            title = { Text("😴 Enter Sleep & Wake-Up Time", color = TextSoftWhite, fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = bedInput,
-                        onValueChange = { bedInput = it },
-                        label = { Text("When did you sleep? (e.g. 11:30 PM)") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = wakeInput,
-                        onValueChange = { wakeInput = it },
-                        label = { Text("When did you wake up? (e.g. 07:00 AM)") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = hrsInput,
-                        onValueChange = { hrsInput = it },
-                        label = { Text("Total Sleep Hours (e.g. 7.5)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Sleep Start Time (Bedtime):", color = PastelLavender, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = bedHr,
+                            onValueChange = { bedHr = it },
+                            label = { Text("Hr") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = bedMin,
+                            onValueChange = { bedMin = it },
+                            label = { Text("Min") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        FilledTonalButton(
+                            onClick = { bedAmPm = if (bedAmPm == "PM") "AM" else "PM" },
+                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
+                        ) {
+                            Text(bedAmPm, color = PastelMint, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Text("Wake-Up Time:", color = PastelPeach, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = wakeHr,
+                            onValueChange = { wakeHr = it },
+                            label = { Text("Hr") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = wakeMin,
+                            onValueChange = { wakeMin = it },
+                            label = { Text("Min") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        FilledTonalButton(
+                            onClick = { wakeAmPm = if (wakeAmPm == "AM") "PM" else "AM" },
+                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
+                        ) {
+                            Text(wakeAmPm, color = PastelMint, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Surface(color = CardElevated, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "✨ Auto-Calculated Sleep: $previewCalculatedHours hours",
+                            color = PastelMint,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    val h = hrsInput.toFloatOrNull()?.coerceIn(1f, 16f) ?: 7.5f
-                    onUpdateSleep(h, bedInput, wakeInput)
+                    val bedFormatted = "${bedHr.padStart(2, '0')}:${bedMin.padStart(2, '0')} $bedAmPm"
+                    val wakeFormatted = "${wakeHr.padStart(2, '0')}:${wakeMin.padStart(2, '0')} $wakeAmPm"
+                    onUpdateSleep(previewCalculatedHours, bedFormatted, wakeFormatted)
                     showSleepDialog = false
                 }) { Text("Save Sleep") }
             },
@@ -1444,10 +1847,7 @@ fun Tab1FriendlyDashboard(
 fun ScorePillarChip(title: String, score: String, color: Color) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(CardElevated)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(CardElevated).padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         Text(title, color = TextMuted, fontSize = 11.sp)
         Text(score, color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -1455,7 +1855,7 @@ fun ScorePillarChip(title: String, score: String, color: Color) {
 }
 
 // ============================================================================
-// TAB 2: WORKOUT SPLIT + PER-DAY 30-MIN ROUTINE + BUILT-IN REST TIMER
+// TAB 2: WORKOUT SPLIT (DYNAMIC PER-SET WEIGHTS: 2.5kg Set 1, 5kg Set 2, etc.)
 // ============================================================================
 @Composable
 fun Tab2FriendlyWorkouts(
@@ -1476,7 +1876,6 @@ fun Tab2FriendlyWorkouts(
     var showAddWorkoutModal by remember { mutableStateOf(false) }
     var editingExercise by remember { mutableStateOf<WorkoutExercise?>(null) }
 
-    // Built-in Gym Rest Timer (30s / 60s / 90s)
     var restSecondsLeft by remember { mutableIntStateOf(0) }
     LaunchedEffect(restSecondsLeft) {
         if (restSecondsLeft > 0) {
@@ -1495,13 +1894,9 @@ fun Tab2FriendlyWorkouts(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(vertical = 18.dp)
     ) {
-        // ACTIVE REST TIMER BAR
+        // REST TIMER
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(18.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1526,15 +1921,13 @@ fun Tab2FriendlyWorkouts(
             }
         }
 
-        // DAILY 30-MIN WORKOUT ROUTINE (SEPARATE FOR EACH DAY: MON - SUN)
+        // DAILY 30-MIN WORKOUT ROUTINE (SEPARATE PER DAY)
         item {
             val isDoneForSelectedDay = daily30MinByDay[selectedDay] == true
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
                 shape = RoundedCornerShape(22.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, if (isDoneForSelectedDay) PastelMint else CardElevated, RoundedCornerShape(22.dp))
+                modifier = Modifier.fillMaxWidth().border(1.dp, if (isDoneForSelectedDay) PastelMint else CardElevated, RoundedCornerShape(22.dp))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -1551,16 +1944,14 @@ fun Tab2FriendlyWorkouts(
                             )
                             Text(
                                 if (isDoneForSelectedDay) "Completed for $selectedDay (+$daily30MinDefaultCals kcal)"
-                                else "Not done yet for $selectedDay (Toggle ON when finished)",
+                                else "Toggle ON when finished for $selectedDay",
                                 color = if (isDoneForSelectedDay) PastelMint else TextMuted,
                                 fontSize = 11.sp
                             )
                         }
                         Switch(
                             checked = isDoneForSelectedDay,
-                            onCheckedChange = { checked ->
-                                onToggleDaily30MinForDay(selectedDay, checked)
-                            }
+                            onCheckedChange = { checked -> onToggleDaily30MinForDay(selectedDay, checked) }
                         )
                     }
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1623,9 +2014,17 @@ fun Tab2FriendlyWorkouts(
             }
         }
 
+        // DYNAMIC PER-SET EXERCISE CARDS
         items(dayExercises, key = { it.id }) { exercise ->
-            val logState = exerciseLogs[exercise.id] ?: ExerciseLogState()
-            val exerciseBurn = (logState.completedSets * (exercise.baseCalPerSet + (logState.loadMultiplierKg * 0.45f))).roundToInt()
+            val rawState = exerciseLogs[exercise.id] ?: ExerciseLogState()
+            val doneList = List(exercise.targetSets) { idx -> rawState.setCompletedList.getOrElse(idx) { false } }
+            val weightsList = List(exercise.targetSets) { idx ->
+                rawState.setWeightsList.getOrElse(idx) {
+                    if (exercise.isBodyweightOrTimed) "Bodyweight" else if (idx == 0) "2.5 kg/side" else "5 kg/side"
+                }
+            }
+            val currentState = rawState.copy(setCompletedList = doneList, setWeightsList = weightsList)
+            val exerciseBurn = calculateExerciseCalories(exercise, currentState)
 
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1639,75 +2038,7 @@ fun Tab2FriendlyWorkouts(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(exercise.name, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text("${exercise.muscleGroup} • ${exercise.targetNote}", color = TextMuted, fontSize = 12.sp)
-                            Text("Previous: ${logState.previousWeightMemory}", color = PastelLavender, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                        IconButton(onClick = { editingExercise = exercise }, modifier = Modifier.size(30.dp)) {
-                            Icon(Icons.Default.Edit, contentDescription = null, tint = TextMuted, modifier = Modifier.size(17.dp))
-                        }
-                        IconButton(onClick = { onDeleteExercise(exercise.id) }, modifier = Modifier.size(30.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = null, tint = PastelCoral, modifier = Modifier.size(17.dp))
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    if (!exercise.isBodyweightOrTimed) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            weightPresetOptions.forEach { (label, totalKg) ->
-                                val selected = logState.selectedWeightLabel == label
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(if (selected) PastelLavender else CardElevated)
-                                        .clickable {
-                                            onUpdateExerciseLog(
-                                                exercise.id,
-                                                logState.copy(selectedWeightLabel = label, loadMultiplierKg = totalKg, previousWeightMemory = label)
-                                            )
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                                ) {
-                                    Text(label, color = if (selected) BgCozySlate else TextSoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Sets:", color = TextSoftWhite, fontSize = 12.sp)
-                            for (setNum in 1..exercise.targetSets) {
-                                val isDone = logState.completedSets >= setNum
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isDone) PastelMint else CardElevated)
-                                        .clickable {
-                                            val newCount = if (logState.completedSets == setNum) setNum - 1 else setNum
-                                            onUpdateExerciseLog(
-                                                exercise.id,
-                                                logState.copy(completedSets = newCount, previousWeightMemory = logState.selectedWeightLabel)
-                                            )
-                                            if (newCount > logState.completedSets) restSecondsLeft = 60
-                                        }
-                                ) {
-                                    if (isDone) {
-                                        Icon(Icons.Default.Check, contentDescription = null, tint = BgCozySlate, modifier = Modifier.size(16.dp))
-                                    } else {
-                                        Text("$setNum", color = TextSoftWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
+                            Text("Prev: ${currentState.previousSetSummaryMemory}", color = PastelLavender, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                         Surface(color = CardElevated, shape = RoundedCornerShape(10.dp)) {
                             Text(
@@ -1715,8 +2046,119 @@ fun Tab2FriendlyWorkouts(
                                 color = PastelMint,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                             )
+                        }
+                        IconButton(onClick = { editingExercise = exercise }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Edit, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                        IconButton(onClick = { onDeleteExercise(exercise.id) }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = PastelCoral, modifier = Modifier.size(16.dp))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // EACH SET HAS ITS OWN ROW, CHECKBOX & DYNAMIC WEIGHT CHIPS
+                    for (setIdx in 0 until exercise.targetSets) {
+                        val isSetDone = doneList[setIdx]
+                        val setWeight = weightsList[setIdx]
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(CardElevated)
+                                .padding(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.clickable {
+                                        val mutableDone = doneList.toMutableList()
+                                        mutableDone[setIdx] = !isSetDone
+                                        val summary = weightsList.mapIndexedNotNull { i, w ->
+                                            if (mutableDone[i]) "S${i + 1}:$w" else null
+                                        }.joinToString(", ").ifEmpty { currentState.previousSetSummaryMemory }
+
+                                        onUpdateExerciseLog(
+                                            exercise.id,
+                                            currentState.copy(setCompletedList = mutableDone, previousSetSummaryMemory = summary)
+                                        )
+                                        if (!isSetDone) restSecondsLeft = 60
+                                    }
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isSetDone) PastelMint else CardSlate)
+                                    ) {
+                                        if (isSetDone) {
+                                            Icon(Icons.Default.Check, contentDescription = null, tint = BgCozySlate, modifier = Modifier.size(16.dp))
+                                        } else {
+                                            Text("${setIdx + 1}", color = TextSoftWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Set ${setIdx + 1}",
+                                        color = if (isSetDone) PastelMint else TextSoftWhite,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+
+                                Text(
+                                    text = if (exercise.isBodyweightOrTimed) "Bodyweight / Timed" else "Weight: $setWeight",
+                                    color = PastelLavender,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            if (!exercise.isBodyweightOrTimed) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    weightPresetOptions.forEach { (label, _) ->
+                                        val selected = setWeight == label
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (selected) PastelLavender else CardSlate)
+                                                .clickable {
+                                                    val mutableWeights = weightsList.toMutableList()
+                                                    mutableWeights[setIdx] = label
+                                                    val summary = mutableWeights.mapIndexedNotNull { i, w ->
+                                                        if (doneList[i]) "S${i + 1}:$w" else null
+                                                    }.joinToString(", ").ifEmpty { "S${setIdx + 1}:$label" }
+
+                                                    onUpdateExerciseLog(
+                                                        exercise.id,
+                                                        currentState.copy(setWeightsList = mutableWeights, previousSetSummaryMemory = summary)
+                                                    )
+                                                }
+                                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                color = if (selected) BgCozySlate else TextSoftWhite,
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1816,10 +2258,7 @@ fun Tab2FriendlyWorkouts(
 fun ExerciseVisualThumbnail(visualType: String, muscleGroup: String) {
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(52.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(CardElevated)
+        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(CardElevated)
     ) {
         Canvas(modifier = Modifier.size(34.dp)) {
             val w = size.width
@@ -1863,7 +2302,7 @@ fun ExerciseVisualThumbnail(visualType: String, muscleGroup: String) {
 }
 
 // ============================================================================
-// TAB 3: HISTORY (WORKOUT HISTORY & STEP COUNT HISTORY)
+// TAB 3: HISTORY
 // ============================================================================
 @Composable
 fun Tab3FriendlyHistory(
@@ -1891,11 +2330,7 @@ fun Tab3FriendlyHistory(
         Spacer(modifier = Modifier.height(12.dp))
 
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(CardSlate)
-                .padding(4.dp)
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSlate).padding(4.dp)
         ) {
             listOf("Workout History", "Step Count History").forEachIndexed { idx, title ->
                 val active = selectedSubTab == idx
@@ -1929,7 +2364,7 @@ fun Tab3FriendlyHistory(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(item.exerciseName, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                     Text("${item.date} (${item.dayName}) • ${item.setsDone} sets • ${item.weightUsed}", color = TextMuted, fontSize = 12.sp)
                                 }
@@ -1979,6 +2414,7 @@ fun Tab4FriendlySettings(
     onUpdateDaily30Cals: (Int) -> Unit,
     onUpdateWaterGoal: (Int) -> Unit,
     onToggleNotifications: (Boolean) -> Unit,
+    onTestSystemNotification: () -> Unit,
     onResetDefaultWorkouts: () -> Unit
 ) {
     var goalText by remember(stepTarget) { mutableStateOf(stepTarget.toString()) }
@@ -1992,7 +2428,7 @@ fun Tab4FriendlySettings(
     ) {
         item {
             Text("Settings & Schedule", color = TextSoftWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("Option B Friendly Theme • Scheduled Alerts Active", color = TextMuted, fontSize = 13.sp)
+            Text("Real-Time Foreground Pedometer & Exact Notifications", color = TextMuted, fontSize = 13.sp)
         }
 
         item {
@@ -2037,17 +2473,24 @@ fun Tab4FriendlySettings(
 
         item {
             Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(20.dp)) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Scheduled Smart Reminders", color = TextSoftWhite, fontWeight = FontWeight.Bold)
-                            Text("• Workouts: 10:30 AM & 4:00 PM (only if not updated)\n• Water: 7:30 AM & Hourly from 11:00 AM\n• In-App Water Check: Every 4 Hours", color = TextMuted, fontSize = 11.sp)
+                            Text("Exact System Notifications", color = TextSoftWhite, fontWeight = FontWeight.Bold)
+                            Text("• Workouts: 10:30 AM & 4:00 PM\n• Water Kickoff: 7:30 AM\n• Hourly Water: 11:00 AM – 9:00 PM\n• 4-Hour Water Level Check Notification", color = TextMuted, fontSize = 11.sp)
                         }
                         Switch(checked = notificationsEnabled, onCheckedChange = onToggleNotifications)
+                    }
+                    Button(
+                        onClick = onTestSystemNotification,
+                        colors = ButtonDefaults.buttonColors(containerColor = PastelLavender),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Send Test System Notification Now", color = BgCozySlate, fontWeight = FontWeight.Bold)
                     }
                 }
             }
