@@ -71,23 +71,66 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.DayOfWeek
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.temporal.TemporalAdjusters
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.roundToInt
 
-// --- OPTION B: FRIENDLY COZY SLATE & PASTEL PALETTE ---
-val BgCozySlate = Color(0xFF1E2235)
-val CardSlate = Color(0xFF282D46)
-val CardElevated = Color(0xFF323854)
-val PastelMint = Color(0xFF6EE7B7)
-val PastelLavender = Color(0xFFC4B5FD)
-val PastelCoral = Color(0xFFFDA4AF)
-val PastelPeach = Color(0xFFFDBA74)
-val PastelSky = Color(0xFF93C5FD)
-val TextSoftWhite = Color(0xFFF8FAFC)
-val TextMuted = Color(0xFF94A3B8)
+// ============================================================================
+// DYNAMIC LIGHT & DARK THEME PALETTE (NO BLUE TINT!)
+// ============================================================================
+data class AppThemeColors(
+    val isDark: Boolean,
+    val bg: Color,
+    val card: Color,
+    val cardSubtle: Color,
+    val border: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val accentGreen: Color,
+    val accentOrange: Color,
+    val accentPurple: Color,
+    val accentBlue: Color,
+    val accentRose: Color
+)
+
+fun getAppTheme(isDark: Boolean): AppThemeColors {
+    return if (isDark) {
+        // True Neutral Dark Mode (Obsidian & Charcoal)
+        AppThemeColors(
+            isDark = true,
+            bg = Color(0xFF121212),
+            card = Color(0xFF1E1E1E),
+            cardSubtle = Color(0xFF2A2A2A),
+            border = Color(0xFF333333),
+            textPrimary = Color(0xFFF5F5F7),
+            textSecondary = Color(0xFF9E9E9E),
+            accentGreen = Color(0xFF10B981),
+            accentOrange = Color(0xFFF97316),
+            accentPurple = Color(0xFFA855F7),
+            accentBlue = Color(0xFF38BDF8),
+            accentRose = Color(0xFFF43F5E)
+        )
+    } else {
+        // Clean Daylight Mode (Warm Alabaster & Pure White)
+        AppThemeColors(
+            isDark = false,
+            bg = Color(0xFFF5F6F8),
+            card = Color(0xFFFFFFFF),
+            cardSubtle = Color(0xFFEEF0F4),
+            border = Color(0xFFE2E5EC),
+            textPrimary = Color(0xFF18181B),
+            textSecondary = Color(0xFF64748B),
+            accentGreen = Color(0xFF059669),
+            accentOrange = Color(0xFFEA580C),
+            accentPurple = Color(0xFF7C3AED),
+            accentBlue = Color(0xFF0284C7),
+            accentRose = Color(0xFFE11D48)
+        )
+    }
+}
+
+val LocalAppTheme = compositionLocalOf { getAppTheme(false) }
 
 // --- DATA MODELS ---
 data class WorkoutExercise(
@@ -102,7 +145,6 @@ data class WorkoutExercise(
     val visualType: String = "barbell"
 )
 
-// Dynamic Per-Set State: Every set has its own weight and completion flag!
 data class ExerciseLogState(
     val setCompletedList: List<Boolean> = listOf(false, false, false),
     val setWeightsList: List<String> = listOf("2.5 kg/side", "5 kg/side", "5 kg/side"),
@@ -130,7 +172,6 @@ data class StepHistoryEntry(
     val calories: Int
 )
 
-// --- WEIGHT OPTIONS (INCLUDING 2.5 KG/SIDE & DUMBBELLS) ---
 val weightPresetOptions = listOf(
     "Empty Bar" to 0f,
     "2.5 kg/side" to 5f,
@@ -163,7 +204,6 @@ fun calculateExerciseCalories(ex: WorkoutExercise, state: ExerciseLogState): Int
     return total.roundToInt()
 }
 
-// --- DEFAULT MON-SUN WORKOUT PLAN ---
 fun getDefaultExercises(): List<WorkoutExercise> = listOf(
     WorkoutExercise("m1", "Mon", "Biceps", "Barbell Biceps Curl", 3, "3 sets", visualType = "barbell"),
     WorkoutExercise("m2", "Mon", "Biceps", "Concentration Curl", 3, "3 sets", visualType = "dumbbell"),
@@ -200,7 +240,7 @@ fun getDefaultExercises(): List<WorkoutExercise> = listOf(
 )
 
 // ============================================================================
-// REAL-TIME 24/7 FOREGROUND PEDOMETER SERVICE (ZERO LAG ON APP OPEN)
+// REAL-TIME 24/7 FOREGROUND PEDOMETER SERVICE
 // ============================================================================
 class StepForegroundService : Service(), SensorEventListener {
     private var sensorManager: SensorManager? = null
@@ -220,13 +260,10 @@ class StepForegroundService : Service(), SensorEventListener {
         } catch (_: Exception) {}
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val stepSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-        val detectorSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
-
-        stepSensor?.let {
+        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
         }
-        detectorSensor?.let {
+        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
         }
     }
@@ -258,7 +295,6 @@ class StepForegroundService : Service(), SensorEventListener {
 
             updateAllHomeWidgets(this)
         } else if (event?.sensor?.type == Sensor.TYPE_STEP_DETECTOR) {
-            // Instant single-step pulse before batch counter even ticks
             val currentTotal = prefs.getInt("steps_$todayKey", 0) + 1
             val currentSensor = prefs.getInt("sensor_steps_$todayKey", 0) + 1
             prefs.edit()
@@ -292,7 +328,7 @@ fun createChannels(context: Context) {
 }
 
 // ============================================================================
-// MAIN ACTIVITY (INSTANT SHAREDPREFS LISTENER FOR ZERO-LAG STEP UPDATES)
+// MAIN ACTIVITY
 // ============================================================================
 class MainActivity : ComponentActivity(), SensorEventListener {
 
@@ -318,7 +354,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val todayKey = LocalDate.now().toString()
         liveStepsState = prefs.getInt("steps_$todayKey", 0)
 
-        // Start 24/7 Foreground Step Service + Fast Direct Listener
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, 0)
@@ -337,32 +372,52 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         } catch (_: Exception) {}
 
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    background = BgCozySlate,
-                    surface = CardSlate,
-                    primary = PastelMint,
-                    secondary = PastelLavender
-                )
-            ) {
-                FitTrackMainRoot(
-                    prefs = prefs,
-                    steps = liveStepsState,
-                    onCalibrateExactSteps = { exactTargetSteps ->
-                        val currentKey = LocalDate.now().toString()
-                        val currentSensor = prefs.getInt("sensor_steps_$currentKey", 0)
-                        val manualDiff = exactTargetSteps - currentSensor
-                        prefs.edit()
-                            .putInt("manual_steps_$currentKey", manualDiff)
-                            .putInt("steps_$currentKey", exactTargetSteps)
-                            .apply()
-                        liveStepsState = exactTargetSteps
-                        updateAllHomeWidgets(this@MainActivity)
-                    },
-                    onRefreshWidgets = {
-                        updateAllHomeWidgets(this@MainActivity)
+            var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("is_dark_theme", false)) } // Default Light & Friendly!
+            val themeColors = getAppTheme(isDarkTheme)
+
+            CompositionLocalProvider(LocalAppTheme provides themeColors) {
+                MaterialTheme(
+                    colorScheme = if (isDarkTheme) {
+                        darkColorScheme(
+                            background = themeColors.bg,
+                            surface = themeColors.card,
+                            primary = themeColors.accentGreen,
+                            secondary = themeColors.accentPurple
+                        )
+                    } else {
+                        lightColorScheme(
+                            background = themeColors.bg,
+                            surface = themeColors.card,
+                            primary = themeColors.accentGreen,
+                            secondary = themeColors.accentPurple
+                        )
                     }
-                )
+                ) {
+                    FitTrackMainRoot(
+                        prefs = prefs,
+                        steps = liveStepsState,
+                        isDarkTheme = isDarkTheme,
+                        onToggleTheme = { newDark ->
+                            isDarkTheme = newDark
+                            prefs.edit().putBoolean("is_dark_theme", newDark).apply()
+                            updateAllHomeWidgets(this@MainActivity)
+                        },
+                        onCalibrateExactSteps = { exactTargetSteps ->
+                            val currentKey = LocalDate.now().toString()
+                            val currentSensor = prefs.getInt("sensor_steps_$currentKey", 0)
+                            val manualDiff = exactTargetSteps - currentSensor
+                            prefs.edit()
+                                .putInt("manual_steps_$currentKey", manualDiff)
+                                .putInt("steps_$currentKey", exactTargetSteps)
+                                .apply()
+                            liveStepsState = exactTargetSteps
+                            updateAllHomeWidgets(this@MainActivity)
+                        },
+                        onRefreshWidgets = {
+                            updateAllHomeWidgets(this@MainActivity)
+                        }
+                    )
+                }
             }
         }
     }
@@ -372,7 +427,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val prefs = getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
         val todayKey = LocalDate.now().toString()
         liveStepsState = prefs.getInt("steps_$todayKey", 0)
-        // Force immediate sensor flush on resume so steps update the instant app opens
         sensorManager?.flush(this)
     }
 
@@ -408,7 +462,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 }
 
 // ============================================================================
-// EXACT SYSTEM NOTIFICATIONS (10:30 AM, 4:00 PM, 7:30 AM, 11 AM+ HOURLY & 4-HR WATER)
+// EXACT SYSTEM NOTIFICATIONS
 // ============================================================================
 fun scheduleAllDailyAlarms(context: Context) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -447,17 +501,12 @@ fun scheduleAllDailyAlarms(context: Context) {
         }
     }
 
-    // 1. Workout Not Updated Notifications: 10:30 AM and 4:00 PM (16:00)
     scheduleExactTimeAlarm(101, 10, 30, "WORKOUT_CHECK_MORNING")
     scheduleExactTimeAlarm(102, 16, 0, "WORKOUT_CHECK_AFTERNOON")
-
-    // 2. Water Notifications: 7:30 AM + Every 1 hour starting from 11:00 AM to 9:00 PM
     scheduleExactTimeAlarm(200, 7, 30, "WATER_MORNING_730")
     for (hr in 11..21) {
         scheduleExactTimeAlarm(200 + hr, hr, 0, "WATER_HOURLY")
     }
-
-    // 3. Every 4 Hours Water Check Notification (11:30 AM, 3:30 PM, 7:30 PM)
     scheduleExactTimeAlarm(301, 11, 30, "WATER_4HR_CHECKIN")
     scheduleExactTimeAlarm(302, 15, 30, "WATER_4HR_CHECKIN")
     scheduleExactTimeAlarm(303, 19, 30, "WATER_4HR_CHECKIN")
@@ -485,10 +534,8 @@ class ReminderReceiver : BroadcastReceiver() {
             }
         }
 
-        // Re-schedule the exact alarm for tomorrow automatically!
         val reqCode = intent.getIntExtra("REQ_CODE", -1)
         val hour = intent.getIntExtra("HOUR", -1)
-        val minute = intent.getIntExtra("MINUTE", 0)
         val type = intent.getStringExtra("REMINDER_TYPE") ?: return
         if (reqCode != -1 && hour != -1) {
             scheduleAllDailyAlarms(context)
@@ -569,64 +616,63 @@ class ReminderReceiver : BroadcastReceiver() {
 }
 
 // ============================================================================
-// CUSTOM GRAPHICAL CANVAS RENDERER FOR ALL 3 HOME SCREEN WIDGETS
+// LIGHT & DARK ADAPTIVE GRAPHICAL CANVAS RENDERER FOR ALL 3 WIDGETS
 // ============================================================================
 object WidgetGraphicRenderer {
 
-    // 1. 2x2 WIDGET: Circular Step Gauge (Steps / Target Ring exactly like Home Page)
-    fun draw2x2CircularWidget(steps: Int, target: Int, cals: Int): Bitmap {
+    // 1. 2x2 WIDGET: Circular Step Gauge (Supports Dark & Light Theme)
+    fun draw2x2CircularWidget(steps: Int, target: Int, cals: Int, isDark: Boolean): Bitmap {
         val size = 420
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = AndroidCanvas(bmp)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // Rounded Cozy Slate Card Background
-        paint.color = AndroidColor.parseColor("#1E2235")
-        canvas.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), 64f, 64f, paint)
+        val bgHex = if (isDark) "#161618" else "#FFFFFF"
+        val borderHex = if (isDark) "#2C2C30" else "#E2E8F0"
+        val trackHex = if (isDark) "#2A2A2E" else "#EEF2F6"
+        val textMainHex = if (isDark) "#FFFFFF" else "#18181B"
+        val textSubHex = if (isDark) "#9E9E9E" else "#64748B"
+        val accentGreenHex = if (isDark) "#10B981" else "#059669"
 
-        // Subtle Inner Border
+        paint.color = AndroidColor.parseColor(bgHex)
+        canvas.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), 68f, 68f, paint)
+
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f
-        paint.color = AndroidColor.parseColor("#323854")
-        canvas.drawRoundRect(RectF(4f, 4f, size - 4f, size - 4f), 60f, 60f, paint)
+        paint.color = AndroidColor.parseColor(borderHex)
+        canvas.drawRoundRect(RectF(4f, 4f, size - 4f, size - 4f), 64f, 64f, paint)
 
-        // Outer Ring Track
         val pad = 54f
         val arcRect = RectF(pad, pad, size - pad, size - pad)
-        paint.strokeWidth = 30f
+        paint.strokeWidth = 32f
         paint.strokeCap = Paint.Cap.ROUND
-        paint.color = AndroidColor.parseColor("#2D3452")
+        paint.color = AndroidColor.parseColor(trackHex)
         canvas.drawArc(arcRect, 135f, 270f, false, paint)
 
-        // Progress Arc (Gradient Lavender to Mint)
         val progress = (steps.toFloat() / target.coerceAtLeast(1)).coerceIn(0f, 1f)
         paint.shader = LinearGradient(
             0f, 0f, size.toFloat(), size.toFloat(),
-            AndroidColor.parseColor("#C4B5FD"),
-            AndroidColor.parseColor("#6EE7B7"),
+            AndroidColor.parseColor("#10B981"),
+            AndroidColor.parseColor("#F97316"),
             Shader.TileMode.CLAMP
         )
         canvas.drawArc(arcRect, 135f, 270f * progress, false, paint)
         paint.shader = null
 
-        // Center Texts
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
 
-        // Step Count
-        paint.color = AndroidColor.WHITE
+        paint.color = AndroidColor.parseColor(textMainHex)
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        paint.textSize = 64f
+        paint.textSize = 66f
         canvas.drawText("$steps", size / 2f, size * 0.48f, paint)
 
-        // Target Subtext
-        paint.color = AndroidColor.parseColor("#94A3B8")
+        paint.color = AndroidColor.parseColor(textSubHex)
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
         paint.textSize = 26f
         canvas.drawText("/ $target steps", size / 2f, size * 0.58f, paint)
 
-        // Bottom Flame Calorie Pill
-        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.color = AndroidColor.parseColor(accentGreenHex)
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textSize = 28f
         canvas.drawText("🔥 $cals kcal", size / 2f, size * 0.84f, paint)
@@ -634,56 +680,57 @@ object WidgetGraphicRenderer {
         return bmp
     }
 
-    // 2. 4x2 WIDGET: Graphical 4-Card KPI Grid (Steps, Burned Kcal, Distance Km, Water/Sleep)
-    fun draw4x2KpiWidget(steps: Int, target: Int, totalCals: Int, km: String, waterMl: Int, score: Int): Bitmap {
+    // 2. 4x2 WIDGET: Graphical 4-Card KPI Grid (Supports Dark & Light Theme)
+    fun draw4x2KpiWidget(steps: Int, target: Int, totalCals: Int, km: String, waterMl: Int, score: Int, isDark: Boolean): Bitmap {
         val w = 840
         val h = 400
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = AndroidCanvas(bmp)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // Background
-        paint.color = AndroidColor.parseColor("#1E2235")
+        val bgHex = if (isDark) "#141416" else "#FFFFFF"
+        val tileHex = if (isDark) "#222226" else "#F4F5F8"
+        val trackHex = if (isDark) "#141416" else "#E2E6EE"
+        val textMainHex = if (isDark) "#FFFFFF" else "#18181B"
+        val textSubHex = if (isDark) "#9E9E9E" else "#64748B"
+
+        paint.color = AndroidColor.parseColor(bgHex)
         canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), 56f, 56f, paint)
 
-        // Top Header Bar
-        paint.color = AndroidColor.WHITE
+        paint.color = AndroidColor.parseColor(textMainHex)
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textSize = 32f
         canvas.drawText("FitTrack Daily KPIs", 36f, 58f, paint)
 
         paint.textAlign = Paint.Align.RIGHT
-        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.color = AndroidColor.parseColor("#10B981")
         canvas.drawText("Health Score: $score/100", w - 36f, 58f, paint)
         paint.textAlign = Paint.Align.LEFT
 
-        // Draw 4 KPI Cards in a 2x2 Grid
         fun drawKpiTile(left: Float, top: Float, right: Float, bottom: Float, title: String, value: String, sub: String, accentHex: String, pct: Float) {
             paint.style = Paint.Style.FILL
-            paint.color = AndroidColor.parseColor("#282D46")
+            paint.color = AndroidColor.parseColor(tileHex)
             canvas.drawRoundRect(RectF(left, top, right, bottom), 30f, 30f, paint)
 
             val accent = AndroidColor.parseColor(accentHex)
-            paint.color = AndroidColor.parseColor("#94A3B8")
-            paint.textSize = 22f
-            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            paint.color = AndroidColor.parseColor(textSubHex)
+            paint.textSize = 21f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             canvas.drawText(title, left + 24f, top + 40f, paint)
 
-            paint.color = AndroidColor.WHITE
+            paint.color = AndroidColor.parseColor(textMainHex)
             paint.textSize = 36f
-            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             canvas.drawText(value, left + 24f, top + 86f, paint)
 
             paint.color = accent
             paint.textSize = 20f
             canvas.drawText(sub, right - 135f, top + 40f, paint)
 
-            // Mini Progress Bar inside KPI Card
             val barLeft = left + 24f
             val barRight = right - 24f
             val barTop = bottom - 26f
             val barBottom = bottom - 14f
-            paint.color = AndroidColor.parseColor("#1E2235")
+            paint.color = AndroidColor.parseColor(trackHex)
             canvas.drawRoundRect(RectF(barLeft, barTop, barRight, barBottom), 8f, 8f, paint)
 
             paint.color = accent
@@ -691,20 +738,15 @@ object WidgetGraphicRenderer {
             canvas.drawRoundRect(RectF(barLeft, barTop, fillRight, barBottom), 8f, 8f, paint)
         }
 
-        val stepPct = steps.toFloat() / target.coerceAtLeast(1)
-        val calPct = totalCals / 600f
-        val kmPct = (steps * 0.0007f) / 6f
-        val waterPct = waterMl / 3000f
-
-        drawKpiTile(30f, 82f, 405f, 222f, "👟 STEPS", "$steps", "/ $target", "#C4B5FD", stepPct)
-        drawKpiTile(435f, 82f, 810f, 222f, "🔥 CALORIES", "$totalCals kcal", "Active", "#6EE7B7", calPct)
-        drawKpiTile(30f, 240f, 405f, 380f, "📍 DISTANCE", "$km km", "Walked", "#FDBA74", kmPct)
-        drawKpiTile(435f, 240f, 810f, 380f, "💧 HYDRATION", "$waterMl ml", "/ 3000ml", "#93C5FD", waterPct)
+        drawKpiTile(30f, 82f, 405f, 222f, "👟 STEPS", "$steps", "/ $target", "#8B5CF6", steps.toFloat() / target.coerceAtLeast(1))
+        drawKpiTile(435f, 82f, 810f, 222f, "🔥 CALORIES", "$totalCals kcal", "Active", "#10B981", totalCals / 600f)
+        drawKpiTile(30f, 240f, 405f, 380f, "📍 DISTANCE", "$km km", "Walked", "#F97316", (steps * 0.0007f) / 6f)
+        drawKpiTile(435f, 240f, 810f, 380f, "💧 WATER", "$waterMl ml", "/ 3000ml", "#0EA5E9", waterMl / 3000f)
 
         return bmp
     }
 
-    // 3. 4x3 WIDGET: Full Graphical Fitness Dashboard (Dual Ring + Burn Bars + Sleep/Water Pills)
+    // 3. 4x3 WIDGET: Full Graphical Dashboard (Supports Dark & Light Theme)
     fun draw4x3DashboardWidget(
         steps: Int,
         target: Int,
@@ -713,7 +755,8 @@ object WidgetGraphicRenderer {
         gymBurn: Int,
         waterMl: Int,
         sleepHrs: Float,
-        score: Int
+        score: Int,
+        isDark: Boolean
     ): Bitmap {
         val w = 860
         val h = 620
@@ -722,57 +765,55 @@ object WidgetGraphicRenderer {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         val totalBurn = stepBurn + routineBurn + gymBurn
+        val bgHex = if (isDark) "#141416" else "#FFFFFF"
+        val tileHex = if (isDark) "#222226" else "#F4F5F8"
+        val textMainHex = if (isDark) "#FFFFFF" else "#18181B"
 
-        // Card Background
-        paint.color = AndroidColor.parseColor("#1E2235")
+        paint.color = AndroidColor.parseColor(bgHex)
         canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), 60f, 60f, paint)
 
-        // Header
-        paint.color = AndroidColor.WHITE
+        paint.color = AndroidColor.parseColor(textMainHex)
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textSize = 34f
         canvas.drawText("FitTrack Pro Dashboard", 40f, 64f, paint)
 
-        // Health Score Pill on Top Right
-        paint.color = AndroidColor.parseColor("#282D46")
+        paint.color = AndroidColor.parseColor(tileHex)
         canvas.drawRoundRect(RectF(w - 250f, 24f, w - 36f, 80f), 28f, 28f, paint)
-        paint.color = AndroidColor.parseColor("#FDBA74")
+        paint.color = AndroidColor.parseColor("#F97316")
         paint.textSize = 26f
         canvas.drawText("⭐ Score: $score/100", w - 230f, 60f, paint)
 
-        // Left Panel: Dual Concentric Activity Rings
         val ringBox = RectF(50f, 115f, 350f, 415f)
         paint.style = Paint.Style.STROKE
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeWidth = 26f
-        paint.color = AndroidColor.parseColor("#282D46")
+        paint.color = AndroidColor.parseColor(tileHex)
         canvas.drawArc(ringBox, 0f, 360f, false, paint)
 
         val stepSweep = 360f * (steps.toFloat() / target.coerceAtLeast(1)).coerceIn(0.04f, 1f)
-        paint.color = AndroidColor.parseColor("#C4B5FD")
+        paint.color = AndroidColor.parseColor("#8B5CF6")
         canvas.drawArc(ringBox, -90f, stepSweep, false, paint)
 
         val innerBox = RectF(86f, 151f, 314f, 379f)
-        paint.color = AndroidColor.parseColor("#282D46")
+        paint.color = AndroidColor.parseColor(tileHex)
         canvas.drawArc(innerBox, 0f, 360f, false, paint)
 
         val calSweep = 360f * (totalBurn / 600f).coerceIn(0.04f, 1f)
-        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.color = AndroidColor.parseColor("#10B981")
         canvas.drawArc(innerBox, -90f, calSweep, false, paint)
 
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
-        paint.color = AndroidColor.WHITE
+        paint.color = AndroidColor.parseColor(textMainHex)
         paint.textSize = 46f
         canvas.drawText("$steps", 200f, 255f, paint)
-        paint.color = AndroidColor.parseColor("#6EE7B7")
+        paint.color = AndroidColor.parseColor("#10B981")
         paint.textSize = 26f
         canvas.drawText("🔥 $totalBurn kcal", 200f, 295f, paint)
         paint.textAlign = Paint.Align.LEFT
 
-        // Right Panel: 3 Graphical Calorie Breakdown Bars
         fun drawStatBar(y: Float, label: String, kcal: Int, maxKcal: Float, hex: String) {
-            paint.color = AndroidColor.parseColor("#F8FAFC")
+            paint.color = AndroidColor.parseColor(textMainHex)
             paint.textSize = 25f
             canvas.drawText(label, 395f, y, paint)
 
@@ -782,7 +823,7 @@ object WidgetGraphicRenderer {
             paint.textAlign = Paint.Align.LEFT
 
             val barTop = y + 14f
-            paint.color = AndroidColor.parseColor("#282D46")
+            paint.color = AndroidColor.parseColor(tileHex)
             canvas.drawRoundRect(RectF(395f, barTop, w - 45f, barTop + 22f), 11f, 11f, paint)
 
             val fillW = (w - 440f) * (kcal / maxKcal).coerceIn(0.05f, 1f)
@@ -790,36 +831,32 @@ object WidgetGraphicRenderer {
             canvas.drawRoundRect(RectF(395f, barTop, 395f + fillW, barTop + 22f), 11f, 11f, paint)
         }
 
-        drawStatBar(155f, "👟 Walk Burn", stepBurn, 350f, "#C4B5FD")
-        drawStatBar(255f, "⏱️ 30m Routine", routineBurn, 250f, "#FDBA74")
-        drawStatBar(355f, "🏋️ Gym Split", gymBurn, 350f, "#6EE7B7")
+        drawStatBar(155f, "👟 Walk Burn", stepBurn, 350f, "#8B5CF6")
+        drawStatBar(255f, "⏱️ 30m Routine", routineBurn, 250f, "#F97316")
+        drawStatBar(355f, "🏋️ Gym Split", gymBurn, 350f, "#10B981")
 
-        // Bottom Row KPI Pills (Water & Sleep) leaving space on bottom-right for interactive button
-        paint.color = AndroidColor.parseColor("#282D46")
+        paint.color = AndroidColor.parseColor(tileHex)
         canvas.drawRoundRect(RectF(40f, 465f, 300f, 575f), 28f, 28f, paint)
         canvas.drawRoundRect(RectF(320f, 465f, 560f, 575f), 28f, 28f, paint)
 
-        paint.color = AndroidColor.parseColor("#93C5FD")
-        paint.textSize = 24f
+        paint.color = AndroidColor.parseColor("#0EA5E9")
+        paint.textSize = 22f
         canvas.drawText("💧 WATER LEVEL", 64f, 508f, paint)
-        paint.color = AndroidColor.WHITE
-        paint.textSize = 32f
+        paint.color = AndroidColor.parseColor(textMainHex)
+        paint.textSize = 30f
         canvas.drawText("$waterMl / 3000 ml", 64f, 552f, paint)
 
-        paint.color = AndroidColor.parseColor("#FDBA74")
-        paint.textSize = 24f
+        paint.color = AndroidColor.parseColor("#F97316")
+        paint.textSize = 22f
         canvas.drawText("😴 SLEEP LOG", 344f, 508f, paint)
-        paint.color = AndroidColor.WHITE
-        paint.textSize = 32f
+        paint.color = AndroidColor.parseColor(textMainHex)
+        paint.textSize = 30f
         canvas.drawText("$sleepHrs hrs", 344f, 552f, paint)
 
         return bmp
     }
 }
 
-// ============================================================================
-// 3 HOME SCREEN WIDGET PROVIDERS (USING BITMAP GRAPHICS)
-// ============================================================================
 fun calculateHealthScoreFromPrefs(prefs: SharedPreferences, todayStr: String): Int {
     val steps = prefs.getInt("steps_$todayStr", 0)
     val stepGoal = prefs.getInt("step_target", 8000).coerceAtLeast(1)
@@ -838,6 +875,7 @@ fun updateAllHomeWidgets(context: Context) {
     val manager = AppWidgetManager.getInstance(context)
     val prefs = context.getSharedPreferences("fittrack_pro_prefs", Context.MODE_PRIVATE)
     val todayStr = LocalDate.now().toString()
+    val isDark = prefs.getBoolean("is_dark_theme", false)
 
     val steps = prefs.getInt("steps_$todayStr", 0)
     val stepGoal = prefs.getInt("step_target", 8000)
@@ -855,10 +893,9 @@ fun updateAllHomeWidgets(context: Context) {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    // 1. Render & Push 2x2 Circular Gauge Widget
     val ids2x2 = manager.getAppWidgetIds(ComponentName(context, WidgetCompact2x2::class.java))
     if (ids2x2.isNotEmpty()) {
-        val bmp2x2 = WidgetGraphicRenderer.draw2x2CircularWidget(steps, stepGoal, totalBurn)
+        val bmp2x2 = WidgetGraphicRenderer.draw2x2CircularWidget(steps, stepGoal, totalBurn, isDark)
         for (id in ids2x2) {
             val views = RemoteViews(context.packageName, R.layout.widget_2x2)
             views.setImageViewBitmap(R.id.img_canvas_2x2, bmp2x2)
@@ -867,10 +904,9 @@ fun updateAllHomeWidgets(context: Context) {
         }
     }
 
-    // 2. Render & Push 4x2 KPI Cards Widget
     val ids4x2 = manager.getAppWidgetIds(ComponentName(context, WidgetSummary4x2::class.java))
     if (ids4x2.isNotEmpty()) {
-        val bmp4x2 = WidgetGraphicRenderer.draw4x2KpiWidget(steps, stepGoal, totalBurn, distanceKm, waterMl, score)
+        val bmp4x2 = WidgetGraphicRenderer.draw4x2KpiWidget(steps, stepGoal, totalBurn, distanceKm, waterMl, score, isDark)
         for (id in ids4x2) {
             val views = RemoteViews(context.packageName, R.layout.widget_4x2)
             views.setImageViewBitmap(R.id.img_canvas_4x2, bmp4x2)
@@ -879,11 +915,10 @@ fun updateAllHomeWidgets(context: Context) {
         }
     }
 
-    // 3. Render & Push 4x3 Visual Dashboard Widget
     val ids4x3 = manager.getAppWidgetIds(ComponentName(context, WidgetDashboard4x3::class.java))
     if (ids4x3.isNotEmpty()) {
         val bmp4x3 = WidgetGraphicRenderer.draw4x3DashboardWidget(
-            steps, stepGoal, stepBurn, routineBurn, splitBurn, waterMl, sleepHrs, score
+            steps, stepGoal, stepBurn, routineBurn, splitBurn, waterMl, sleepHrs, score, isDark
         )
         val addWaterPending = PendingIntent.getBroadcast(
             context, 502, Intent(context, ReminderReceiver::class.java).apply { action = "com.fittrack.app.ACTION_WIDGET_ADD_WATER" },
@@ -917,9 +952,6 @@ class WidgetDashboard4x3 : AppWidgetProvider() {
     }
 }
 
-// ============================================================================
-// HELPER: AUTO-CALCULATE SLEEP HOURS FROM BEDTIME & WAKE TIME
-// ============================================================================
 fun calculateSleepHours(bedHour12: Int, bedMin: Int, bedAmPm: String, wakeHour12: Int, wakeMin: Int, wakeAmPm: String): Float {
     fun to24HrMinutes(h12: Int, min: Int, amPm: String): Int {
         var h = h12 % 12
@@ -929,7 +961,7 @@ fun calculateSleepHours(bedHour12: Int, bedMin: Int, bedAmPm: String, wakeHour12
     val bedTotalMin = to24HrMinutes(bedHour12, bedMin, bedAmPm)
     val wakeTotalMin = to24HrMinutes(wakeHour12, wakeMin, wakeAmPm)
     var diffMin = wakeTotalMin - bedTotalMin
-    if (diffMin <= 0) diffMin += 24 * 60 // Slept past midnight
+    if (diffMin <= 0) diffMin += 24 * 60
     return ((diffMin / 60f) * 10f).roundToInt() / 10f
 }
 
@@ -940,9 +972,12 @@ fun calculateSleepHours(bedHour12: Int, bedMin: Int, bedAmPm: String, wakeHour12
 fun FitTrackMainRoot(
     prefs: SharedPreferences,
     steps: Int,
+    isDarkTheme: Boolean,
+    onToggleTheme: (Boolean) -> Unit,
     onCalibrateExactSteps: (Int) -> Unit,
     onRefreshWidgets: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     val context = LocalContext.current
     val today = LocalDate.now()
     val todayStr = today.toString()
@@ -972,7 +1007,6 @@ fun FitTrackMainRoot(
     var daily30MinDefaultCals by remember { mutableIntStateOf(prefs.getInt("daily_30m_cals", 185)) }
     var notificationsEnabled by remember { mutableStateOf(prefs.getBoolean("notif_enabled", true)) }
 
-    // Separate 30-Min Routine toggle for each day (Mon - Sun)
     val daily30MinByDay = remember {
         mutableStateMapOf<String, Boolean>().apply {
             listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach { day ->
@@ -987,7 +1021,6 @@ fun FitTrackMainRoot(
     var sleepBedtime by remember { mutableStateOf(prefs.getString("sleep_bed_$todayStr", "11:30 PM") ?: "11:30 PM") }
     var sleepWakeTime by remember { mutableStateOf(prefs.getString("sleep_wake_$todayStr", "07:00 AM") ?: "07:00 AM") }
 
-    // --- EXERCISES & DYNAMIC PER-SET LOGS ---
     val exercisesList = remember {
         mutableStateListOf<WorkoutExercise>().apply {
             val savedJson = prefs.getString("custom_exercises_json", null)
@@ -1035,17 +1068,12 @@ fun FitTrackMainRoot(
             val weightsCsv = prefs.getString("set_weights_csv_${ex.id}", null)
             val prevMem = prefs.getString("mem_weight_${ex.id}", "Set 1: 2.5 kg/side") ?: "Set 1: 2.5 kg/side"
 
-            val doneList = if (doneCsv != null) {
-                doneCsv.split(",").map { it == "1" }
-            } else {
-                List(ex.targetSets) { false }
-            }
+            val doneList = if (doneCsv != null) doneCsv.split(",").map { it == "1" } else List(ex.targetSets) { false }
             val weightsList = if (weightsCsv != null) {
                 weightsCsv.split("|")
             } else {
                 List(ex.targetSets) { idx ->
-                    if (ex.isBodyweightOrTimed) "Bodyweight"
-                    else if (idx == 0) "2.5 kg/side" else "5 kg/side"
+                    if (ex.isBodyweightOrTimed) "Bodyweight" else if (idx == 0) "2.5 kg/side" else "5 kg/side"
                 }
             }
             exerciseLogs[ex.id] = ExerciseLogState(doneList, weightsList, prevMem)
@@ -1113,7 +1141,6 @@ fun FitTrackMainRoot(
             }
         }
 
-        // Archive & reset each day's 30-Min Routine for the new week
         listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach { day ->
             if (daily30MinByDay[day] == true) {
                 workoutHistoryList.add(
@@ -1151,7 +1178,6 @@ fun FitTrackMainRoot(
 
     val foodLogs = remember { mutableStateListOf<FoodItem>() }
 
-    // --- CALORIE & SCORE MATH ---
     val stepCalories = (steps * (userBodyWeightKg / 70f) * 0.04f).roundToInt()
     val todayShortDay = today.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
     val daily30MinCalories = if (daily30MinByDay[todayShortDay] == true) daily30MinDefaultCals else 0
@@ -1163,7 +1189,7 @@ fun FitTrackMainRoot(
     val totalBurnedCalories = stepCalories + totalWorkoutBurn
     val totalEatenCalories = foodLogs.sumOf { it.calories }
 
-    LaunchedEffect(daily30MinCalories, splitWorkoutCalories, steps, waterIntakeMl, sleepHoursToday) {
+    LaunchedEffect(daily30MinCalories, splitWorkoutCalories, steps, waterIntakeMl, sleepHoursToday, isDarkTheme) {
         prefs.edit()
             .putInt("routine_burn_$todayStr", daily30MinCalories)
             .putInt("split_burn_$todayStr", splitWorkoutCalories)
@@ -1194,9 +1220,9 @@ fun FitTrackMainRoot(
     var currentTab by remember { mutableIntStateOf(0) }
 
     Scaffold(
-        containerColor = BgCozySlate,
+        containerColor = theme.bg,
         bottomBar = {
-            NavigationBar(containerColor = CardSlate, tonalElevation = 10.dp) {
+            NavigationBar(containerColor = theme.card, tonalElevation = 12.dp) {
                 val navItems = listOf(
                     Triple(0, "Dashboard", Icons.Default.Home),
                     Triple(1, "Workouts", Icons.Default.FitnessCenter),
@@ -1210,11 +1236,11 @@ fun FitTrackMainRoot(
                         icon = { Icon(icon, contentDescription = label) },
                         label = { Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = BgCozySlate,
-                            selectedTextColor = PastelMint,
-                            indicatorColor = PastelMint,
-                            unselectedIconColor = TextMuted,
-                            unselectedTextColor = TextMuted
+                            selectedIconColor = Color.White,
+                            selectedTextColor = theme.accentGreen,
+                            indicatorColor = theme.accentGreen,
+                            unselectedIconColor = theme.textSecondary,
+                            unselectedTextColor = theme.textSecondary
                         )
                     )
                 }
@@ -1223,7 +1249,7 @@ fun FitTrackMainRoot(
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when (currentTab) {
-                0 -> Tab1FriendlyDashboard(
+                0 -> Tab1SpaciousUserFriendlyDashboard(
                     steps = steps,
                     stepTarget = stepTarget,
                     stepCalories = stepCalories,
@@ -1242,6 +1268,8 @@ fun FitTrackMainRoot(
                     waterScore = waterScore,
                     sleepScore = sleepScore,
                     foodLogs = foodLogs,
+                    isDarkTheme = isDarkTheme,
+                    onToggleTheme = onToggleTheme,
                     onCalibrateExactSteps = onCalibrateExactSteps,
                     onChangeStepTarget = { newGoal ->
                         stepTarget = newGoal
@@ -1313,6 +1341,8 @@ fun FitTrackMainRoot(
                     daily30MinDefaultCals = daily30MinDefaultCals,
                     waterGoalMl = waterGoalMl,
                     notificationsEnabled = notificationsEnabled,
+                    isDarkTheme = isDarkTheme,
+                    onToggleTheme = onToggleTheme,
                     onUpdateStepTarget = {
                         stepTarget = it
                         prefs.edit().putInt("step_target", it).apply()
@@ -1353,10 +1383,10 @@ fun FitTrackMainRoot(
 }
 
 // ============================================================================
-// TAB 1: DASHBOARD (WITH AUTO-CALCULATED SLEEP DIALOG)
+// TAB 1: SPACIOUS, OPEN & USER-FRIENDLY DASHBOARD (WITH LIGHT/DARK TOGGLE)
 // ============================================================================
 @Composable
-fun Tab1FriendlyDashboard(
+fun Tab1SpaciousUserFriendlyDashboard(
     steps: Int,
     stepTarget: Int,
     stepCalories: Int,
@@ -1375,257 +1405,386 @@ fun Tab1FriendlyDashboard(
     waterScore: Int,
     sleepScore: Int,
     foodLogs: MutableList<FoodItem>,
+    isDarkTheme: Boolean,
+    onToggleTheme: (Boolean) -> Unit,
     onCalibrateExactSteps: (Int) -> Unit,
     onChangeStepTarget: (Int) -> Unit,
     onAddWaterMl: (Int) -> Unit,
     onUpdateSleep: (Float, String, String) -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var showCalibrateDialog by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showAddFoodDialog by remember { mutableStateOf(false) }
     val distanceKm = String.format(Locale.US, "%.2f", steps * 0.0007f)
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(vertical = 18.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
+        contentPadding = PaddingValues(vertical = 24.dp)
     ) {
-        // 1. HEALTH SCORE
+        // --- 1. SPACIOUS TOP HEADER & INSTANT LIGHT/DARK MODE SWITCHER ---
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "FitTrack Pro",
+                        color = theme.textPrimary,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "Your daily fitness & wellness overview",
+                        color = theme.textSecondary,
+                        fontSize = 14.sp
+                    )
+                }
+
+                // Friendly Light / Dark Theme Pill Button
+                Surface(
+                    color = theme.card,
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier
+                        .border(1.dp, theme.border, RoundedCornerShape(50))
+                        .clickable { onToggleTheme(!isDarkTheme) }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isDarkTheme) "🌙 Dark" else "☀️ Light",
+                            color = theme.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- 2. EXPANSIVE HERO CARD: PEDOMETER RING + CLEAR CALORIE BREAKDOWN ---
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth()
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, theme.border, RoundedCornerShape(28.dp))
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
+                Column(modifier = Modifier.padding(24.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                "Today's Movement & Burn",
+                                color = theme.textPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                            Text(
+                                "24/7 Live Sensor • $distanceKm km walked",
+                                color = theme.accentGreen,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        TextButton(onClick = { showCalibrateDialog = true }) {
+                            Text("Sync / Goal", color = theme.accentPurple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Spacious Hero Row: Large Step Ring on Left, Vertical Burn Stack on Right
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(150.dp)) {
+                            CircularProgressIndicator(
+                                progress = { 1f },
+                                modifier = Modifier.fillMaxSize(),
+                                color = theme.cardSubtle,
+                                strokeWidth = 14.dp
+                            )
+                            CircularProgressIndicator(
+                                progress = { (steps.toFloat() / stepTarget.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxSize(),
+                                color = theme.accentGreen,
+                                strokeWidth = 14.dp,
+                                strokeCap = StrokeCap.Round
+                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    "$steps",
+                                    color = theme.textPrimary,
+                                    fontSize = 28.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Text(
+                                    "of $stepTarget",
+                                    color = theme.textSecondary,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    "STEPS",
+                                    color = theme.accentGreen,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(20.dp))
+
+                        // Right Column: Spacious Calorie Summary Stack
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                color = theme.cardSubtle,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    Text("TOTAL BURNED", color = theme.textSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "🔥 $totalBurnedCalories kcal",
+                                        color = theme.accentOrange,
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+
+                            StatRow("👟 Walk Burn", "$stepCalories kcal", theme.accentPurple)
+                            StatRow("⏱️ 30m Routine", "$daily30MinCalories kcal", theme.accentOrange)
+                            StatRow("🏋️ Gym Split", "$splitWorkoutCalories kcal", theme.accentGreen)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    FilledTonalButton(
+                        onClick = { showCalibrateDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = theme.cardSubtle)
+                    ) {
+                        Text(
+                            "Sync with Google Fit / Edit Step Goal",
+                            color = theme.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- 3. CLEAN 2-COLUMN BENTO GRID: WATER HYDRATION & SLEEP SCHEDULE ---
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Left Bento Card: Water Intake
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = theme.card),
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .border(1.dp, theme.border, RoundedCornerShape(24.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("💧 Hydration", color = theme.accentBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(
+                            "$waterIntakeMl ml",
+                            color = theme.textPrimary,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 24.sp
+                        )
+                        Text("Goal: $waterGoalMl ml", color = theme.textSecondary, fontSize = 12.sp)
+
+                        LinearProgressIndicator(
+                            progress = { (waterIntakeMl.toFloat() / waterGoalMl.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
+                            color = theme.accentBlue,
+                            trackColor = theme.cardSubtle
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = { onAddWaterMl(250) },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.accentBlue),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.weight(1f).height(38.dp)
+                            ) {
+                                Text("+250", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = { onAddWaterMl(500) },
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.weight(1f).height(38.dp)
+                            ) {
+                                Text("+500", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                // Right Bento Card: Auto-Calculated Sleep
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = theme.card),
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .border(1.dp, theme.border, RoundedCornerShape(24.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("😴 Sleep Log", color = theme.accentOrange, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(
+                            "$sleepHoursToday hrs",
+                            color = theme.textPrimary,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 24.sp
+                        )
+                        Text(
+                            "$sleepBedtime ➔ $sleepWakeTime",
+                            color = theme.textSecondary,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
+
+                        LinearProgressIndicator(
+                            progress = { (sleepHoursToday / 8f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
+                            color = theme.accentOrange,
+                            trackColor = theme.cardSubtle
+                        )
+
+                        Button(
+                            onClick = { showSleepDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = theme.cardSubtle),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(38.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("Set Sleep Times", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- 4. SPACIOUS DAILY HEALTH SCORE BANNER ---
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, theme.border, RoundedCornerShape(24.dp))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Daily Health Score", color = PastelLavender, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Text("$totalHealthScore / 100", color = TextSoftWhite, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+                            Text("Overall Health Score", color = theme.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                when {
-                                    totalHealthScore >= 85 -> "🌟 Peak Recovery & Activity!"
-                                    totalHealthScore >= 65 -> "👍 Solid Daily Rhythm"
-                                    else -> "💪 Keep moving & hydrating today!"
-                                },
-                                color = PastelMint,
-                                fontSize = 12.sp
+                                "$totalHealthScore / 100",
+                                color = theme.textPrimary,
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.size(68.dp).clip(CircleShape).background(CardElevated)
+                        Surface(
+                            color = theme.cardSubtle,
+                            shape = RoundedCornerShape(50)
                         ) {
-                            CircularProgressIndicator(
-                                progress = { totalHealthScore / 100f },
-                                modifier = Modifier.fillMaxSize(),
-                                color = PastelMint,
-                                strokeWidth = 7.dp,
-                                strokeCap = StrokeCap.Round
+                            Text(
+                                text = when {
+                                    totalHealthScore >= 85 -> "🌟 Peak Day"
+                                    totalHealthScore >= 65 -> "👍 On Track"
+                                    else -> "💪 Keep Going"
+                                },
+                                color = theme.accentGreen,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                             )
-                            Text("$totalHealthScore%", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        ScorePillarChip("👟 Steps", "$stepScore/25", PastelLavender)
-                        ScorePillarChip("🏋️ Gym", "$workoutScore/25", PastelMint)
-                        ScorePillarChip("💧 Water", "$waterScore/25", PastelSky)
-                        ScorePillarChip("😴 Sleep", "$sleepScore/25", PastelPeach)
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        ScorePillarChip("👟 Steps", "$stepScore/25", theme.accentPurple)
+                        ScorePillarChip("🏋️ Gym", "$workoutScore/25", theme.accentGreen)
+                        ScorePillarChip("💧 Water", "$waterScore/25", theme.accentBlue)
+                        ScorePillarChip("😴 Sleep", "$sleepScore/25", theme.accentOrange)
                     }
                 }
             }
         }
 
-        // 2. LIVE PEDOMETER & CALORIE RINGS
+        // --- 5. EAT & TRACK (TREATS / DESSERTS) ---
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
+                colors = CardDefaults.cardColors(containerColor = theme.card),
                 shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, theme.border, RoundedCornerShape(24.dp))
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
+                Column(modifier = Modifier.padding(20.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("Live Pedometer & Burn", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Real-Time 24/7 Sensor Active", color = PastelMint, fontSize = 11.sp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("🍫 Eat & Track (Treats)", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                            Text("Log chocolates, ice cream or extra snacks", color = theme.textSecondary, fontSize = 12.sp)
                         }
-                        TextButton(onClick = { showCalibrateDialog = true }) {
-                            Text("Sync / Goal", color = PastelLavender, fontSize = 12.sp)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                            CircularProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxSize(), color = CardElevated, strokeWidth = 12.dp)
-                            CircularProgressIndicator(
-                                progress = { (steps.toFloat() / stepTarget.coerceAtLeast(1)).coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxSize(),
-                                color = PastelLavender,
-                                strokeWidth = 12.dp,
-                                strokeCap = StrokeCap.Round
-                            )
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("$steps", color = TextSoftWhite, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("/ $stepTarget steps", color = TextMuted, fontSize = 10.sp)
-                                Text("$distanceKm km", color = PastelLavender, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                            CircularProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxSize(), color = CardElevated, strokeWidth = 12.dp)
-                            CircularProgressIndicator(
-                                progress = { (totalBurnedCalories / 600f).coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxSize(),
-                                color = PastelMint,
-                                strokeWidth = 12.dp,
-                                strokeCap = StrokeCap.Round
-                            )
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("$totalBurnedCalories", color = TextSoftWhite, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("kcal burned", color = TextMuted, fontSize = 10.sp)
-                                Text("Net: ${totalBurnedCalories - totalEatenCalories}", color = PastelMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
+                        Button(
+                            onClick = { showAddFoodDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = theme.accentRose),
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Text("+ Add Treat", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        StatRow("Walk Burn", "$stepCalories kcal", PastelLavender)
-                        StatRow("30m Routine", "$daily30MinCalories kcal", PastelPeach)
-                        StatRow("Gym Split", "$splitWorkoutCalories kcal", PastelMint)
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    FilledTonalButton(
-                        onClick = { showCalibrateDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
-                    ) {
-                        Text("Sync with Google Fit / Edit Step Goal", color = PastelMint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-
-        // 3. WATER TRACKER
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("💧 Water & Hydration Tracker", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("System Notifications: 7:30 AM, Hourly (11 AM+) & 4-Hr Check", color = TextMuted, fontSize = 11.sp)
-                        }
-                        Text("$waterIntakeMl / $waterGoalMl ml", color = PastelSky, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    LinearProgressIndicator(
-                        progress = { (waterIntakeMl.toFloat() / waterGoalMl.coerceAtLeast(1)).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(50)),
-                        color = PastelSky,
-                        trackColor = CardElevated
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { onAddWaterMl(250) },
-                            colors = ButtonDefaults.buttonColors(containerColor = PastelSky),
-                            modifier = Modifier.weight(1f)
-                        ) { Text("🥛 +250 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
-                        Button(
-                            onClick = { onAddWaterMl(500) },
-                            colors = ButtonDefaults.buttonColors(containerColor = PastelMint),
-                            modifier = Modifier.weight(1f)
-                        ) { Text("🍶 +500 ml", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
-                        OutlinedButton(onClick = { onAddWaterMl(-250) }, modifier = Modifier.weight(0.7f)) {
-                            Text("-250", color = TextMuted, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. SLEEP TRACKER (AUTO-CALCULATES HOURS FROM START & WAKE TIME)
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("😴 Sleep Schedule (Auto-Calculated)", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Slept: $sleepBedtime  ➔  Woke: $sleepWakeTime", color = PastelPeach, fontSize = 12.sp)
-                        }
-                        Button(
-                            onClick = { showSleepDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = CardElevated),
-                            shape = RoundedCornerShape(50)
-                        ) {
-                            Text("${sleepHoursToday} hrs (Set Times)", color = PastelPeach, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. EAT & TRACK
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("🍫 Eat & Track (Treats / Desserts)", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text("Log chocolates, ice cream or extra treats", color = TextMuted, fontSize = 11.sp)
-                        }
-                        Button(
-                            onClick = { showAddFoodDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = PastelCoral),
-                            shape = RoundedCornerShape(50),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Text("+ Add Treat", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1637,28 +1796,29 @@ fun Tab1FriendlyDashboard(
                         quickTreats.forEach { (label, cal) ->
                             AssistChip(
                                 onClick = { foodLogs.add(FoodItem(System.currentTimeMillis(), label, cal, LocalDate.now().toString())) },
-                                label = { Text("$label (+$cal)", color = TextSoftWhite, fontSize = 12.sp) },
-                                colors = AssistChipDefaults.assistChipColors(containerColor = CardElevated)
+                                label = { Text("$label (+$cal)", color = theme.textPrimary, fontSize = 12.sp) },
+                                colors = AssistChipDefaults.assistChipColors(containerColor = theme.cardSubtle)
                             )
                         }
                     }
+
                     if (foodLogs.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         foodLogs.forEach { item ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 3.dp)
-                                    .background(CardElevated, RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    .padding(vertical = 4.dp)
+                                    .background(theme.cardSubtle, RoundedCornerShape(14.dp))
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(item.name, color = TextSoftWhite, fontSize = 13.sp)
+                                Text(item.name, color = theme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${item.calories} kcal", color = PastelCoral, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    IconButton(onClick = { foodLogs.remove(item) }, modifier = Modifier.size(26.dp)) {
-                                        Icon(Icons.Default.Delete, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                                    Text("${item.calories} kcal", color = theme.accentRose, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    IconButton(onClick = { foodLogs.remove(item) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Delete, contentDescription = null, tint = theme.textSecondary, modifier = Modifier.size(18.dp))
                                     }
                                 }
                             }
@@ -1674,10 +1834,10 @@ fun Tab1FriendlyDashboard(
         var targetInput by remember { mutableStateOf(stepTarget.toString()) }
         AlertDialog(
             onDismissRequest = { showCalibrateDialog = false },
-            containerColor = CardSlate,
-            title = { Text("Sync with Google Fit & Step Goal", color = TextSoftWhite) },
+            containerColor = theme.card,
+            title = { Text("Sync with Google Fit & Step Goal", color = theme.textPrimary, fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = exactGoogleFitSteps,
                         onValueChange = { exactGoogleFitSteps = it },
@@ -1699,7 +1859,7 @@ fun Tab1FriendlyDashboard(
                     exactGoogleFitSteps.toIntOrNull()?.let { onCalibrateExactSteps(it) }
                     targetInput.toIntOrNull()?.let { onChangeStepTarget(it.coerceAtLeast(500)) }
                     showCalibrateDialog = false
-                }) { Text("Sync & Save") }
+                }) { Text("Sync & Save", color = Color.White) }
             },
             dismissButton = {
                 TextButton(onClick = { showCalibrateDialog = false }) { Text("Cancel") }
@@ -1707,7 +1867,6 @@ fun Tab1FriendlyDashboard(
         )
     }
 
-    // --- AUTO-CALCULATING SLEEP DIALOG (START TIME & WAKE UP TIME -> HOURS) ---
     if (showSleepDialog) {
         var bedHr by remember { mutableStateOf("11") }
         var bedMin by remember { mutableStateOf("30") }
@@ -1728,11 +1887,11 @@ fun Tab1FriendlyDashboard(
 
         AlertDialog(
             onDismissRequest = { showSleepDialog = false },
-            containerColor = CardSlate,
-            title = { Text("😴 Enter Sleep & Wake-Up Time", color = TextSoftWhite, fontWeight = FontWeight.Bold) },
+            containerColor = theme.card,
+            title = { Text("😴 Enter Sleep & Wake-Up Time", color = theme.textPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Sleep Start Time (Bedtime):", color = PastelLavender, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Sleep Start Time (Bedtime):", color = theme.accentPurple, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = bedHr,
@@ -1752,13 +1911,13 @@ fun Tab1FriendlyDashboard(
                         )
                         FilledTonalButton(
                             onClick = { bedAmPm = if (bedAmPm == "PM") "AM" else "PM" },
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
+                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = theme.cardSubtle)
                         ) {
-                            Text(bedAmPm, color = PastelMint, fontWeight = FontWeight.Bold)
+                            Text(bedAmPm, color = theme.accentGreen, fontWeight = FontWeight.Bold)
                         }
                     }
 
-                    Text("Wake-Up Time:", color = PastelPeach, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Wake-Up Time:", color = theme.accentOrange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = wakeHr,
@@ -1778,16 +1937,16 @@ fun Tab1FriendlyDashboard(
                         )
                         FilledTonalButton(
                             onClick = { wakeAmPm = if (wakeAmPm == "AM") "PM" else "AM" },
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = CardElevated)
+                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = theme.cardSubtle)
                         ) {
-                            Text(wakeAmPm, color = PastelMint, fontWeight = FontWeight.Bold)
+                            Text(wakeAmPm, color = theme.accentGreen, fontWeight = FontWeight.Bold)
                         }
                     }
 
-                    Surface(color = CardElevated, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    Surface(color = theme.cardSubtle, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = "✨ Auto-Calculated Sleep: $previewCalculatedHours hours",
-                            color = PastelMint,
+                            color = theme.accentGreen,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
                             modifier = Modifier.padding(12.dp)
@@ -1801,7 +1960,7 @@ fun Tab1FriendlyDashboard(
                     val wakeFormatted = "${wakeHr.padStart(2, '0')}:${wakeMin.padStart(2, '0')} $wakeAmPm"
                     onUpdateSleep(previewCalculatedHours, bedFormatted, wakeFormatted)
                     showSleepDialog = false
-                }) { Text("Save Sleep") }
+                }) { Text("Save Sleep", color = Color.White) }
             },
             dismissButton = {
                 TextButton(onClick = { showSleepDialog = false }) { Text("Cancel") }
@@ -1814,8 +1973,8 @@ fun Tab1FriendlyDashboard(
         var foodCal by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showAddFoodDialog = false },
-            containerColor = CardSlate,
-            title = { Text("Log Treat / Dessert", color = TextSoftWhite) },
+            containerColor = theme.card,
+            title = { Text("Log Treat / Dessert", color = theme.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(value = foodName, onValueChange = { foodName = it }, label = { Text("Item Name") }, singleLine = true)
@@ -1834,7 +1993,7 @@ fun Tab1FriendlyDashboard(
                         foodLogs.add(FoodItem(System.currentTimeMillis(), foodName, foodCal.toIntOrNull() ?: 250, LocalDate.now().toString()))
                         showAddFoodDialog = false
                     }
-                }) { Text("Add") }
+                }) { Text("Add", color = Color.White) }
             },
             dismissButton = {
                 TextButton(onClick = { showAddFoodDialog = false }) { Text("Cancel") }
@@ -1845,17 +2004,22 @@ fun Tab1FriendlyDashboard(
 
 @Composable
 fun ScorePillarChip(title: String, score: String, color: Color) {
+    val theme = LocalAppTheme.current
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(CardElevated).padding(horizontal = 12.dp, vertical = 8.dp)
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(theme.cardSubtle)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        Text(title, color = TextMuted, fontSize = 11.sp)
-        Text(score, color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text(title, color = theme.textSecondary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(score, color = color, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
     }
 }
 
 // ============================================================================
-// TAB 2: WORKOUT SPLIT (DYNAMIC PER-SET WEIGHTS: 2.5kg Set 1, 5kg Set 2, etc.)
+// TAB 2: WORKOUT SPLIT (ADAPTS TO LIGHT & DARK THEME)
 // ============================================================================
 @Composable
 fun Tab2FriendlyWorkouts(
@@ -1870,6 +2034,7 @@ fun Tab2FriendlyWorkouts(
     onDeleteExercise: (String) -> Unit,
     onFinishAndArchiveWeek: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     val todayDefaultDay = LocalDate.now().dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
     var selectedDay by remember { mutableStateOf(if (todayDefaultDay in days) todayDefaultDay else "Mon") }
@@ -1890,30 +2055,33 @@ fun Tab2FriendlyWorkouts(
     )
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(vertical = 18.dp)
+        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(vertical = 22.dp)
     ) {
-        // REST TIMER
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(18.dp)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(20.dp))
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         if (restSecondsLeft > 0) "⏱️ Rest Timer: ${restSecondsLeft}s" else "⏱️ Quick Rest Timer:",
-                        color = if (restSecondsLeft > 0) PastelMint else TextSoftWhite,
+                        color = if (restSecondsLeft > 0) theme.accentGreen else theme.textPrimary,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        fontSize = 14.sp
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(30, 60, 90).forEach { sec ->
                             AssistChip(
                                 onClick = { restSecondsLeft = sec },
-                                label = { Text("${sec}s", color = TextSoftWhite, fontSize = 11.sp) },
-                                colors = AssistChipDefaults.assistChipColors(containerColor = CardElevated)
+                                label = { Text("${sec}s", color = theme.textPrimary, fontSize = 12.sp) },
+                                colors = AssistChipDefaults.assistChipColors(containerColor = theme.cardSubtle)
                             )
                         }
                     }
@@ -1921,15 +2089,16 @@ fun Tab2FriendlyWorkouts(
             }
         }
 
-        // DAILY 30-MIN WORKOUT ROUTINE (SEPARATE PER DAY)
         item {
             val isDoneForSelectedDay = daily30MinByDay[selectedDay] == true
             Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(22.dp),
-                modifier = Modifier.fillMaxWidth().border(1.dp, if (isDoneForSelectedDay) PastelMint else CardElevated, RoundedCornerShape(22.dp))
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.5.dp, if (isDoneForSelectedDay) theme.accentGreen else theme.border, RoundedCornerShape(24.dp))
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1938,15 +2107,15 @@ fun Tab2FriendlyWorkouts(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 "🔥 $selectedDay: 30-Min Routine & Warm-Up",
-                                color = if (isDoneForSelectedDay) PastelMint else TextSoftWhite,
+                                color = if (isDoneForSelectedDay) theme.accentGreen else theme.textPrimary,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
+                                fontSize = 16.sp
                             )
                             Text(
                                 if (isDoneForSelectedDay) "Completed for $selectedDay (+$daily30MinDefaultCals kcal)"
                                 else "Toggle ON when finished for $selectedDay",
-                                color = if (isDoneForSelectedDay) PastelMint else TextMuted,
-                                fontSize = 11.sp
+                                color = if (isDoneForSelectedDay) theme.accentGreen else theme.textSecondary,
+                                fontSize = 12.sp
                             )
                         }
                         Switch(
@@ -1954,14 +2123,13 @@ fun Tab2FriendlyWorkouts(
                             onCheckedChange = { checked -> onToggleDaily30MinForDay(selectedDay, checked) }
                         )
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("• Normal Warm-up  •  1 set normal + 2 sets 5kg squats", color = TextSoftWhite, fontSize = 12.sp)
-                    Text("• High Knees (2 sets)  •  Incline Pushups (3 × 15)", color = TextSoftWhite, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("• Normal Warm-up  •  1 set normal + 2 sets 5kg squats", color = theme.textPrimary, fontSize = 12.sp)
+                    Text("• High Knees (2 sets)  •  Incline Pushups (3 × 15)", color = theme.textPrimary, fontSize = 12.sp)
                 }
             }
         }
 
-        // MON - SUN SELECTOR
         item {
             Column {
                 Row(
@@ -1969,33 +2137,34 @@ fun Tab2FriendlyWorkouts(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Weekly Workout Split", color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Weekly Workout Split", color = theme.textPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                     Button(
                         onClick = { showAddWorkoutModal = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = PastelMint),
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.accentGreen),
                         shape = RoundedCornerShape(50)
                     ) {
-                        Text("+ Workout", color = BgCozySlate, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("+ Workout", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     days.forEach { day ->
                         val isSelected = selectedDay == day
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
-                                .width(64.dp)
+                                .width(66.dp)
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(if (isSelected) PastelLavender else CardSlate)
+                                .background(if (isSelected) theme.accentPurple else theme.card)
+                                .border(1.dp, if (isSelected) theme.accentPurple else theme.border, RoundedCornerShape(16.dp))
                                 .clickable { selectedDay = day }
-                                .padding(vertical = 10.dp)
+                                .padding(vertical = 12.dp)
                         ) {
-                            Text(day, color = if (isSelected) BgCozySlate else TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(dayTitles[day] ?: "", color = if (isSelected) BgCozySlate else TextMuted, fontSize = 10.sp)
+                            Text(day, color = if (isSelected) Color.White else theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(dayTitles[day] ?: "", color = if (isSelected) Color.White.copy(alpha = 0.85f) else theme.textSecondary, fontSize = 10.sp)
                         }
                     }
                 }
@@ -2005,16 +2174,19 @@ fun Tab2FriendlyWorkouts(
         val dayExercises = exercisesList.filter { it.day == selectedDay }
         if (dayExercises.isEmpty()) {
             item {
-                Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(18.dp)) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Rest & Recovery Day ($selectedDay)", color = TextSoftWhite, fontWeight = FontWeight.Bold)
-                        Text("Tap '+ Workout' above if you do any custom session today.", color = TextMuted, fontSize = 12.sp)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = theme.card),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(20.dp))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Rest & Recovery Day ($selectedDay)", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Tap '+ Workout' above if you do any custom session today.", color = theme.textSecondary, fontSize = 13.sp)
                     }
                 }
             }
         }
 
-        // DYNAMIC PER-SET EXERCISE CARDS
         items(dayExercises, key = { it.id }) { exercise ->
             val rawState = exerciseLogs[exercise.id] ?: ExerciseLogState()
             val doneList = List(exercise.targetSets) { idx -> rawState.setCompletedList.getOrElse(idx) { false } }
@@ -2027,39 +2199,38 @@ fun Tab2FriendlyWorkouts(
             val exerciseBurn = calculateExerciseCalories(exercise, currentState)
 
             Card(
-                colors = CardDefaults.cardColors(containerColor = CardSlate),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(22.dp))
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         ExerciseVisualThumbnail(visualType = exercise.visualType, muscleGroup = exercise.muscleGroup)
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(exercise.name, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("${exercise.muscleGroup} • ${exercise.targetNote}", color = TextMuted, fontSize = 12.sp)
-                            Text("Prev: ${currentState.previousSetSummaryMemory}", color = PastelLavender, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Text(exercise.name, color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text("${exercise.muscleGroup} • ${exercise.targetNote}", color = theme.textSecondary, fontSize = 12.sp)
+                            Text("Prev: ${currentState.previousSetSummaryMemory}", color = theme.accentPurple, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        Surface(color = CardElevated, shape = RoundedCornerShape(10.dp)) {
+                        Surface(color = theme.cardSubtle, shape = RoundedCornerShape(10.dp)) {
                             Text(
                                 "$exerciseBurn kcal",
-                                color = PastelMint,
+                                color = theme.accentGreen,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                             )
                         }
                         IconButton(onClick = { editingExercise = exercise }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Edit, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Edit, contentDescription = null, tint = theme.textSecondary, modifier = Modifier.size(16.dp))
                         }
                         IconButton(onClick = { onDeleteExercise(exercise.id) }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = null, tint = PastelCoral, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = theme.accentRose, modifier = Modifier.size(16.dp))
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // EACH SET HAS ITS OWN ROW, CHECKBOX & DYNAMIC WEIGHT CHIPS
                     for (setIdx in 0 until exercise.targetSets) {
                         val isSetDone = doneList[setIdx]
                         val setWeight = weightsList[setIdx]
@@ -2069,8 +2240,8 @@ fun Tab2FriendlyWorkouts(
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
                                 .clip(RoundedCornerShape(14.dp))
-                                .background(CardElevated)
-                                .padding(10.dp)
+                                .background(theme.cardSubtle)
+                                .padding(12.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -2098,18 +2269,18 @@ fun Tab2FriendlyWorkouts(
                                         modifier = Modifier
                                             .size(28.dp)
                                             .clip(CircleShape)
-                                            .background(if (isSetDone) PastelMint else CardSlate)
+                                            .background(if (isSetDone) theme.accentGreen else theme.card)
                                     ) {
                                         if (isSetDone) {
-                                            Icon(Icons.Default.Check, contentDescription = null, tint = BgCozySlate, modifier = Modifier.size(16.dp))
+                                            Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                                         } else {
-                                            Text("${setIdx + 1}", color = TextSoftWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text("${setIdx + 1}", color = theme.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         "Set ${setIdx + 1}",
-                                        color = if (isSetDone) PastelMint else TextSoftWhite,
+                                        color = if (isSetDone) theme.accentGreen else theme.textPrimary,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp
                                     )
@@ -2117,7 +2288,7 @@ fun Tab2FriendlyWorkouts(
 
                                 Text(
                                     text = if (exercise.isBodyweightOrTimed) "Bodyweight / Timed" else "Weight: $setWeight",
-                                    color = PastelLavender,
+                                    color = theme.accentPurple,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -2134,7 +2305,7 @@ fun Tab2FriendlyWorkouts(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(if (selected) PastelLavender else CardSlate)
+                                                .background(if (selected) theme.accentPurple else theme.card)
                                                 .clickable {
                                                     val mutableWeights = weightsList.toMutableList()
                                                     mutableWeights[setIdx] = label
@@ -2147,11 +2318,11 @@ fun Tab2FriendlyWorkouts(
                                                         currentState.copy(setWeightsList = mutableWeights, previousSetSummaryMemory = summary)
                                                     )
                                                 }
-                                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
                                         ) {
                                             Text(
                                                 text = label,
-                                                color = if (selected) BgCozySlate else TextSoftWhite,
+                                                color = if (selected) Color.White else theme.textPrimary,
                                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                                                 fontSize = 11.sp
                                             )
@@ -2167,7 +2338,7 @@ fun Tab2FriendlyWorkouts(
 
         item {
             OutlinedButton(onClick = onFinishAndArchiveWeek, modifier = Modifier.fillMaxWidth()) {
-                Text("Archive Week to History & Reset Sets", color = PastelMint)
+                Text("Archive Week to History & Reset Sets", color = theme.accentGreen, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -2180,8 +2351,8 @@ fun Tab2FriendlyWorkouts(
 
         AlertDialog(
             onDismissRequest = { showAddWorkoutModal = false },
-            containerColor = CardSlate,
-            title = { Text("Add Exercise to $selectedDay", color = TextSoftWhite) },
+            containerColor = theme.card,
+            title = { Text("Add Exercise to $selectedDay", color = theme.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Exercise Name") }, singleLine = true)
@@ -2195,7 +2366,7 @@ fun Tab2FriendlyWorkouts(
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = isBodyweight, onCheckedChange = { isBodyweight = it })
-                        Text("Bodyweight / Timed", color = TextSoftWhite, fontSize = 13.sp)
+                        Text("Bodyweight / Timed", color = theme.textPrimary, fontSize = 13.sp)
                     }
                 }
             },
@@ -2211,7 +2382,7 @@ fun Tab2FriendlyWorkouts(
                         )
                         showAddWorkoutModal = false
                     }
-                }) { Text("Add") }
+                }) { Text("Add", color = Color.White) }
             },
             dismissButton = {
                 TextButton(onClick = { showAddWorkoutModal = false }) { Text("Cancel") }
@@ -2225,8 +2396,8 @@ fun Tab2FriendlyWorkouts(
         var note by remember { mutableStateOf(ex.targetNote) }
         AlertDialog(
             onDismissRequest = { editingExercise = null },
-            containerColor = CardSlate,
-            title = { Text("Edit Exercise", color = TextSoftWhite) },
+            containerColor = theme.card,
+            title = { Text("Edit Exercise", color = theme.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true)
@@ -2245,7 +2416,7 @@ fun Tab2FriendlyWorkouts(
                     val s = sets.toIntOrNull()?.coerceIn(1, 10) ?: ex.targetSets
                     onEditExercise(ex.copy(name = name, targetSets = s, targetNote = note))
                     editingExercise = null
-                }) { Text("Save") }
+                }) { Text("Save", color = Color.White) }
             },
             dismissButton = {
                 TextButton(onClick = { editingExercise = null }) { Text("Cancel") }
@@ -2256,44 +2427,45 @@ fun Tab2FriendlyWorkouts(
 
 @Composable
 fun ExerciseVisualThumbnail(visualType: String, muscleGroup: String) {
+    val theme = LocalAppTheme.current
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(CardElevated)
+        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(theme.cardSubtle)
     ) {
         Canvas(modifier = Modifier.size(34.dp)) {
             val w = size.width
             val h = size.height
             when (visualType) {
                 "barbell" -> {
-                    drawLine(PastelLavender, Offset(w * 0.1f, h * 0.5f), Offset(w * 0.9f, h * 0.5f), strokeWidth = 6f, cap = StrokeCap.Round)
-                    drawRoundRect(PastelMint, Offset(w * 0.15f, h * 0.22f), Size(w * 0.12f, h * 0.56f), CornerRadius(4f, 4f))
-                    drawRoundRect(PastelMint, Offset(w * 0.73f, h * 0.22f), Size(w * 0.12f, h * 0.56f), CornerRadius(4f, 4f))
+                    drawLine(theme.accentPurple, Offset(w * 0.1f, h * 0.5f), Offset(w * 0.9f, h * 0.5f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawRoundRect(theme.accentGreen, Offset(w * 0.15f, h * 0.22f), Size(w * 0.12f, h * 0.56f), CornerRadius(4f, 4f))
+                    drawRoundRect(theme.accentGreen, Offset(w * 0.73f, h * 0.22f), Size(w * 0.12f, h * 0.56f), CornerRadius(4f, 4f))
                 }
                 "cable" -> {
-                    drawCircle(PastelLavender, radius = w * 0.16f, center = Offset(w * 0.5f, h * 0.22f), style = Stroke(width = 4f))
-                    drawLine(PastelMint, Offset(w * 0.5f, h * 0.38f), Offset(w * 0.5f, h * 0.78f), strokeWidth = 5f)
-                    drawLine(PastelMint, Offset(w * 0.3f, h * 0.78f), Offset(w * 0.7f, h * 0.78f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawCircle(theme.accentPurple, radius = w * 0.16f, center = Offset(w * 0.5f, h * 0.22f), style = Stroke(width = 4f))
+                    drawLine(theme.accentGreen, Offset(w * 0.5f, h * 0.38f), Offset(w * 0.5f, h * 0.78f), strokeWidth = 5f)
+                    drawLine(theme.accentGreen, Offset(w * 0.3f, h * 0.78f), Offset(w * 0.7f, h * 0.78f), strokeWidth = 6f, cap = StrokeCap.Round)
                 }
                 "legs" -> {
-                    drawCircle(PastelMint, radius = w * 0.12f, center = Offset(w * 0.5f, h * 0.2f))
-                    drawLine(PastelLavender, Offset(w * 0.5f, h * 0.32f), Offset(w * 0.35f, h * 0.6f), strokeWidth = 6f, cap = StrokeCap.Round)
-                    drawLine(PastelMint, Offset(w * 0.35f, h * 0.6f), Offset(w * 0.55f, h * 0.88f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawCircle(theme.accentGreen, radius = w * 0.12f, center = Offset(w * 0.5f, h * 0.2f))
+                    drawLine(theme.accentPurple, Offset(w * 0.5f, h * 0.32f), Offset(w * 0.35f, h * 0.6f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawLine(theme.accentGreen, Offset(w * 0.35f, h * 0.6f), Offset(w * 0.55f, h * 0.88f), strokeWidth = 6f, cap = StrokeCap.Round)
                 }
                 "bodyweight" -> {
-                    drawCircle(PastelMint, radius = w * 0.11f, center = Offset(w * 0.22f, h * 0.35f))
-                    drawLine(PastelLavender, Offset(w * 0.32f, h * 0.42f), Offset(w * 0.85f, h * 0.68f), strokeWidth = 6f, cap = StrokeCap.Round)
-                    drawLine(PastelMint, Offset(w * 0.32f, h * 0.42f), Offset(w * 0.28f, h * 0.75f), strokeWidth = 5f, cap = StrokeCap.Round)
+                    drawCircle(theme.accentGreen, radius = w * 0.11f, center = Offset(w * 0.22f, h * 0.35f))
+                    drawLine(theme.accentPurple, Offset(w * 0.32f, h * 0.42f), Offset(w * 0.85f, h * 0.68f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawLine(theme.accentGreen, Offset(w * 0.32f, h * 0.42f), Offset(w * 0.28f, h * 0.75f), strokeWidth = 5f, cap = StrokeCap.Round)
                 }
                 else -> {
-                    drawLine(PastelLavender, Offset(w * 0.25f, h * 0.5f), Offset(w * 0.75f, h * 0.5f), strokeWidth = 6f, cap = StrokeCap.Round)
-                    drawRoundRect(PastelMint, Offset(w * 0.14f, h * 0.26f), Size(w * 0.14f, h * 0.48f), CornerRadius(6f, 6f))
-                    drawRoundRect(PastelMint, Offset(w * 0.72f, h * 0.26f), Size(w * 0.14f, h * 0.48f), CornerRadius(6f, 6f))
+                    drawLine(theme.accentPurple, Offset(w * 0.25f, h * 0.5f), Offset(w * 0.75f, h * 0.5f), strokeWidth = 6f, cap = StrokeCap.Round)
+                    drawRoundRect(theme.accentGreen, Offset(w * 0.14f, h * 0.26f), Size(w * 0.14f, h * 0.48f), CornerRadius(6f, 6f))
+                    drawRoundRect(theme.accentGreen, Offset(w * 0.72f, h * 0.26f), Size(w * 0.14f, h * 0.48f), CornerRadius(6f, 6f))
                 }
             }
         }
         Text(
             muscleGroup.take(4).uppercase(),
-            color = TextMuted,
+            color = theme.textSecondary,
             fontSize = 8.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp)
@@ -2310,27 +2482,33 @@ fun Tab3FriendlyHistory(
     stepHistoryList: List<StepHistoryEntry>,
     onArchiveCurrentWeekNow: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var selectedSubTab by remember { mutableIntStateOf(0) }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("Workout & Step History", color = TextSoftWhite, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("Auto-saves & resets every Monday", color = TextMuted, fontSize = 12.sp)
+                Text("Workout & Step History", color = theme.textPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                Text("Auto-saves & resets every Monday", color = theme.textSecondary, fontSize = 13.sp)
             }
             TextButton(onClick = onArchiveCurrentWeekNow) {
-                Text("Archive Week", color = PastelMint, fontSize = 12.sp)
+                Text("Archive Week", color = theme.accentGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         Row(
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSlate).padding(4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(theme.card)
+                .border(1.dp, theme.border, RoundedCornerShape(16.dp))
+                .padding(4.dp)
         ) {
             listOf("Workout History", "Step Count History").forEachIndexed { idx, title ->
                 val active = selectedSubTab == idx
@@ -2338,37 +2516,41 @@ fun Tab3FriendlyHistory(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (active) PastelLavender else Color.Transparent)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (active) theme.accentPurple else Color.Transparent)
                         .clickable { selectedSubTab = idx }
                         .padding(vertical = 10.dp)
                 ) {
-                    Text(title, color = if (active) BgCozySlate else TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(title, color = if (active) Color.White else theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         if (selectedSubTab == 0) {
             if (workoutHistoryList.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No archived workouts yet.", color = TextMuted, fontSize = 13.sp)
+                    Text("No archived workouts yet.", color = theme.textSecondary, fontSize = 14.sp)
                 }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(workoutHistoryList, key = { it.id }) { item ->
-                        Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(16.dp)) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = theme.card),
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(18.dp))
+                        ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.exerciseName, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("${item.date} (${item.dayName}) • ${item.setsDone} sets • ${item.weightUsed}", color = TextMuted, fontSize = 12.sp)
+                                    Text(item.exerciseName, color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    Text("${item.date} (${item.dayName}) • ${item.setsDone} sets • ${item.weightUsed}", color = theme.textSecondary, fontSize = 12.sp)
                                 }
-                                Text("${item.caloriesBurned} kcal", color = PastelMint, fontWeight = FontWeight.Bold)
+                                Text("${item.caloriesBurned} kcal", color = theme.accentGreen, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -2377,19 +2559,23 @@ fun Tab3FriendlyHistory(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(stepHistoryList, key = { it.date }) { entry ->
-                    Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(16.dp)) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = theme.card),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(18.dp))
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(14.dp),
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text(entry.date, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("Goal: ${entry.goal} steps", color = TextMuted, fontSize = 12.sp)
+                                Text(entry.date, color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text("Goal: ${entry.goal} steps", color = theme.textSecondary, fontSize = 12.sp)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text("${entry.steps} steps", color = PastelLavender, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("${entry.calories} kcal", color = PastelMint, fontSize = 12.sp)
+                                Text("${entry.steps} steps", color = theme.accentPurple, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text("${entry.calories} kcal", color = theme.accentGreen, fontSize = 12.sp)
                             }
                         }
                     }
@@ -2400,7 +2586,7 @@ fun Tab3FriendlyHistory(
 }
 
 // ============================================================================
-// TAB 4: SETTINGS
+// TAB 4: SETTINGS (WITH THEME SWITCHER)
 // ============================================================================
 @Composable
 fun Tab4FriendlySettings(
@@ -2409,6 +2595,8 @@ fun Tab4FriendlySettings(
     daily30MinDefaultCals: Int,
     waterGoalMl: Int,
     notificationsEnabled: Boolean,
+    isDarkTheme: Boolean,
+    onToggleTheme: (Boolean) -> Unit,
     onUpdateStepTarget: (Int) -> Unit,
     onUpdateBodyWeight: (Int) -> Unit,
     onUpdateDaily30Cals: (Int) -> Unit,
@@ -2417,24 +2605,49 @@ fun Tab4FriendlySettings(
     onTestSystemNotification: () -> Unit,
     onResetDefaultWorkouts: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var goalText by remember(stepTarget) { mutableStateOf(stepTarget.toString()) }
     var weightText by remember(userBodyWeightKg) { mutableStateOf(userBodyWeightKg.toString()) }
     var routineCalText by remember(daily30MinDefaultCals) { mutableStateOf(daily30MinDefaultCals.toString()) }
     var waterGoalText by remember(waterGoalMl) { mutableStateOf(waterGoalMl.toString()) }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text("Settings & Schedule", color = TextSoftWhite, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("Real-Time Foreground Pedometer & Exact Notifications", color = TextMuted, fontSize = 13.sp)
+            Text("Settings & Appearance", color = theme.textPrimary, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Customize Light/Dark mode, goals & system alerts", color = theme.textSecondary, fontSize = 13.sp)
         }
 
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(20.dp)) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Daily Goals & Calibration", color = TextSoftWhite, fontWeight = FontWeight.Bold)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(22.dp))
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Dark Theme (App & Widgets)", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Switch between Clean Light Mode and True Dark Mode", color = theme.textSecondary, fontSize = 12.sp)
+                    }
+                    Switch(checked = isDarkTheme, onCheckedChange = onToggleTheme)
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(22.dp))
+            ) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Daily Goals & Calibration", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     OutlinedTextField(
                         value = goalText,
                         onValueChange = { goalText = it; it.toIntOrNull()?.let(onUpdateStepTarget) },
@@ -2472,25 +2685,29 @@ fun Tab4FriendlySettings(
         }
 
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = CardSlate), shape = RoundedCornerShape(20.dp)) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.fillMaxWidth().border(1.dp, theme.border, RoundedCornerShape(22.dp))
+            ) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Exact System Notifications", color = TextSoftWhite, fontWeight = FontWeight.Bold)
-                            Text("• Workouts: 10:30 AM & 4:00 PM\n• Water Kickoff: 7:30 AM\n• Hourly Water: 11:00 AM – 9:00 PM\n• 4-Hour Water Level Check Notification", color = TextMuted, fontSize = 11.sp)
+                            Text("Exact System Notifications", color = theme.textPrimary, fontWeight = FontWeight.Bold)
+                            Text("• Workouts: 10:30 AM & 4:00 PM\n• Water Kickoff: 7:30 AM\n• Hourly Water: 11:00 AM – 9:00 PM\n• 4-Hour Water Level Check Notification", color = theme.textSecondary, fontSize = 11.sp)
                         }
                         Switch(checked = notificationsEnabled, onCheckedChange = onToggleNotifications)
                     }
                     Button(
                         onClick = onTestSystemNotification,
-                        colors = ButtonDefaults.buttonColors(containerColor = PastelLavender),
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.accentPurple),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Send Test System Notification Now", color = BgCozySlate, fontWeight = FontWeight.Bold)
+                        Text("Send Test System Notification Now", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2498,7 +2715,7 @@ fun Tab4FriendlySettings(
 
         item {
             OutlinedButton(onClick = onResetDefaultWorkouts, modifier = Modifier.fillMaxWidth()) {
-                Text("Restore Default Mon–Fri Exercises", color = PastelCoral)
+                Text("Restore Default Mon–Fri Exercises", color = theme.accentRose, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -2506,12 +2723,17 @@ fun Tab4FriendlySettings(
 
 @Composable
 fun StatRow(label: String, value: String, accent: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(accent))
-        Spacer(modifier = Modifier.width(6.dp))
-        Column {
-            Text(label, color = TextMuted, fontSize = 10.sp)
-            Text(value, color = TextSoftWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    val theme = LocalAppTheme.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(accent))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(label, color = theme.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
+        Text(value, color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
 }
